@@ -100,8 +100,8 @@ FFmpeg            写出 output/*.mp4
 ### 1. 克隆与环境
 
 ```bash
-git clone <你的仓库地址>.git
-cd mini-video-agent
+git clone https://github.com/guorunquan/video-editing-agent.git
+cd video-editing-agent
 
 python -m venv .venv
 # Windows:
