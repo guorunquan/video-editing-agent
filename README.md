@@ -7,6 +7,8 @@
 
 本项目是学习向的 **v0.2**：在 v0.1「Agent + Tool Calling + 真实改视频」之上，补上成片播放与文字叠加，并加了一点「下一步提示」让对话更顺手。设计思路参考开源项目 [OpenChatCut](https://github.com/0xsline/OpenChatCut)（对话驱动剪辑 / 草稿确认后再落地），但刻意做成学生可维护的命令行小工具，而不是完整剪辑器。
 
+各版本功能与变更见 **[CHANGELOG.md](./CHANGELOG.md)**（建议与 Git Tag 同步维护）。
+
 ---
 
 ## 功能一览（当前已实现）
@@ -236,6 +238,8 @@ python main.py
 ---
 
 ## 路线图
+
+详细条目与历史版本说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 - [x] v0.1 探测 + 切片 + 导出管理 + 确认机制  
 - [x] v0.2 打开成片 + 文字贴纸（标题/字幕/角标）+ 更顺手的提示  
