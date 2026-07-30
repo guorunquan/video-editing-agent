@@ -36,7 +36,7 @@
 | 顺序 | 文件 | 你要搞懂的问题 |
 |------|------|----------------|
 | 1 | `main.py` | 程序从哪开始？用户输入怎么进 Agent？ |
-| 2 | `tools.py` 前半 | `probe_video` / `trim_keep` 自己怎么干活？ |
+| 2 | `tools.py` 前半 | `probe_video` / `trim_keep` / `add_text_overlay` 自己怎么干活？ |
 | 3 | `tools.py` 后半 | `TOOL_DECLARATIONS` 和 `run_tool` 是什么关系？ |
 | 4 | `agent.py` 的 `chat()` | 模型如何「想调工具 → 你执行 → 再问模型」？ |
 | 5 | `ffmpeg_bin.py` | 为什么找不到系统 FFmpeg 也能跑？ |
@@ -214,7 +214,9 @@ Agent 开发不只写 happy path，还要会提示用户怎么恢复。
 
 ### 作业 C（3 天）：加一个小工具
 
-例如 `open_output`：在 Windows 上用默认播放器打开某个导出文件（`os.startfile`）。  
+例如 `export_preview_frame`：截取成片某一秒的 PNG 预览图（方便确认文字位置）。  
+
+（v0.2 已内置 `open_output` / `add_text_overlay`，可对照源码看「加工具」怎么落地。）
 
 步骤固定：
 

@@ -26,16 +26,18 @@ def main() -> None:
         default_video = Path(__file__).resolve().parent / default_video
 
     print("=" * 50)
-    print("Mini Video Trim Agent (Gemini + FFmpeg)")
+    print("Mini Video Agent v0.2 (Gemini + FFmpeg)")
     print(f"model: {model}")
     print(f"default video: {default_video}")
     print("exists:", default_video.exists())
-    print("try:")
+    print("可以这样说：")
     print("  - 这个视频多长？")
     print("  - 去掉前 5 秒")
-    print("  - 用 D:\\path\\a.mp4，去掉前 1 秒")
-    print("  - 列出已导出的视频 / 删除某个导出成片")
-    print("  (切片和删除都会先给计划，你再说「确认」)")
+    print("  - 加标题：决赛高光")
+    print("  - 底部加字幕：感谢观看")
+    print("  - 打开刚导出的视频")
+    print("  - 列出已导出的视频")
+    print("  (切片 / 加字 / 删除都会先给计划，你再说「确认」)")
     print("type quit to exit")
     print("=" * 50)
 
