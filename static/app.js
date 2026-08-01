@@ -13,6 +13,11 @@
 
   let busy = false;
   let currentPlayUrl = "";
+  let lastUserMessage = "";
+
+  // 卡住超时（常见原因：未开 VPN / 连不上 Gemini）
+  const CHAT_TIMEOUT_MS = 60000;
+  const CHAT_WARN_MS = 20000;
 
   function formatDetail(detail) {
     if (!detail) return "请求失败";
@@ -104,20 +109,37 @@
     applyState(await res.json());
   }
 
-  async function sendChat(text) {
+  async function sendChat(text, { isRetry = false } = {}) {
     const message = (text || "").trim();
     if (!message || busy) return;
 
-    addBubble(message, "user");
+    lastUserMessage = message;
+    if (!isRetry) {
+      addBubble(message, "user");
+    } else {
+      addBubble(`重试：${message}`, "system");
+    }
     input.value = "";
     const pending = addBubble("思考并调用工具中…", "assistant pending");
     setBusy(true);
+
+    const controller = new AbortController();
+    const timeoutSec = Math.round(CHAT_TIMEOUT_MS / 1000);
+    const warnSec = Math.round(CHAT_WARN_MS / 1000);
+    const warnTimer = setTimeout(() => {
+      if (pending.isConnected) {
+        pending.textContent =
+          `已等待约 ${warnSec} 秒…若未开 VPN，Gemini 可能连不上，可稍后再试。`;
+      }
+    }, CHAT_WARN_MS);
+    const abortTimer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
       pending.remove();
@@ -129,8 +151,17 @@
       applyState(data.state);
     } catch (err) {
       pending.remove();
-      addBubble(`网络错误：${err.message || err}`, "assistant");
+      if (err && err.name === "AbortError") {
+        addBubble(
+          `超过 ${timeoutSec} 秒仍无响应，已停止等待。\n请检查 VPN / 网络后重试（可点下方「重试上一条」）。`,
+          "assistant"
+        );
+      } else {
+        addBubble(`网络错误：${err.message || err}\n请检查 VPN / 网络后重试。`, "assistant");
+      }
     } finally {
+      clearTimeout(warnTimer);
+      clearTimeout(abortTimer);
       setBusy(false);
       input.focus();
     }
@@ -149,6 +180,15 @@
   });
 
   document.getElementById("chips").addEventListener("click", (e) => {
+    const retryBtn = e.target.closest("button[data-retry]");
+    if (retryBtn) {
+      if (!lastUserMessage) {
+        addBubble("还没有可重试的上一条消息。", "system");
+        return;
+      }
+      sendChat(lastUserMessage, { isRetry: true });
+      return;
+    }
     const btn = e.target.closest("button[data-prompt]");
     if (!btn) return;
     sendChat(btn.dataset.prompt);

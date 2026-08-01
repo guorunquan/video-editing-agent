@@ -188,7 +188,7 @@ python web_app.py
 # 上传 →「去掉前 3 秒」→「确认」→ 看右侧预览
 ```
 
-命令行入口：`python main.py`（把视频放到 `samples/` 或设 `DEFAULT_VIDEO`）。
+命令行入口：`python main.py`（默认 `samples/demo.mp4`，也可改 `.env` 的 `DEFAULT_VIDEO`）。
 
 ---
 

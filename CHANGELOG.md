@@ -29,6 +29,11 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 
 - 新增面向使用者的 [USAGE.md](./USAGE.md)；README / LEARNING 交叉链接已同步
 
+体验小修：
+
+- Web 聊天：约 20 秒等待提示、约 60 秒超时停止并提示重试；增加「重试上一条」
+- 默认样本改为仓库内 `samples/demo.mp4`（并允许该文件进入 Git）
+
 ---
 
 ## [0.4.0] — 2026-08-01

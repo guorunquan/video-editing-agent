@@ -97,7 +97,7 @@ def _get_working_video() -> Path | None:
 
 
 def _default_video() -> Path:
-    rel = (os.getenv("DEFAULT_VIDEO") or "samples/pubg.mp4").strip()
+    rel = (os.getenv("DEFAULT_VIDEO") or "samples/demo.mp4").strip()
     path = Path(rel)
     if not path.is_absolute():
         path = ROOT / path

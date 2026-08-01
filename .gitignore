@@ -1,5 +1,6 @@
 samples/*
 !samples/.gitkeep
+!samples/demo.mp4
 uploads/*
 !uploads/.gitkeep
 output/*
@@ -16,5 +17,6 @@ __pycache__/
 *.mov
 *.mkv
 *.webm
+!samples/demo.mp4
 Thumbs.db
 .DS_Store

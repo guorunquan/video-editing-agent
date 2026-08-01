@@ -21,7 +21,7 @@ def main() -> None:
     api_key, model = load_settings()
     agent = VideoAgent(api_key=api_key, model=model)
 
-    default_video = Path(os.getenv("DEFAULT_VIDEO") or "samples/pubg.mp4")
+    default_video = Path(os.getenv("DEFAULT_VIDEO") or "samples/demo.mp4")
     if not default_video.is_absolute():
         default_video = Path(__file__).resolve().parent / default_video
 
