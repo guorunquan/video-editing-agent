@@ -260,6 +260,10 @@ def _video_meta(video: Path) -> dict:
 
 
 def _open_path(target: Path) -> str:
+    # Web 模式下由页面播放器预览，避免再弹系统播放器
+    web_mode = (os.getenv("WEB_MODE") or "").strip().lower() in {"1", "true", "yes"}
+    if web_mode:
+        return f"已准备预览（请在网页播放器查看）：\n{target}"
     try:
         if sys.platform == "win32":
             os.startfile(str(target))  # type: ignore[attr-defined]
@@ -270,6 +274,61 @@ def _open_path(target: Path) -> str:
     except OSError as e:
         return f"打开失败：{e}\n请手动打开：{target}"
     return f"已用系统默认程序打开：\n{target}"
+
+
+def get_media_state() -> dict:
+    """给 Web UI 用的媒体状态（工作视频 / 成片 / 预览图）。"""
+    working = _get_working_video()
+    outputs = _list_output_files()
+    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    previews = sorted(
+        [
+            p
+            for p in PREVIEW_DIR.iterdir()
+            if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    def _item(p: Path) -> dict:
+        return {
+            "name": p.name,
+            "path": str(p.resolve()),
+            "size_mb": round(p.stat().st_size / (1024 * 1024), 2),
+            "mtime": p.stat().st_mtime,
+        }
+
+    latest_output = outputs[0] if outputs else None
+    latest_preview = previews[0] if previews else None
+    # 上传后 working 更新；导出后 working 也会指向新成片。按较新者预览，避免一直播旧 output。
+    play: Path | None
+    if working and latest_output:
+        if working.resolve() == latest_output.resolve():
+            play = working
+        elif working.stat().st_mtime >= latest_output.stat().st_mtime:
+            play = working
+        else:
+            play = latest_output
+    else:
+        play = working or latest_output
+    return {
+        "working_video": _item(working) if working else None,
+        "latest_output": _item(latest_output) if latest_output else None,
+        "latest_preview": _item(latest_preview) if latest_preview else None,
+        "play_path": str(play.resolve()) if play else None,
+        "outputs": [_item(p) for p in outputs[:20]],
+        "previews": [_item(p) for p in previews[:10]],
+    }
+
+
+def set_working_video(path: str | Path) -> Path:
+    """设置当前工作视频（上传后由 Web 层调用）。"""
+    video = Path(path).expanduser().resolve()
+    if not video.exists() or not video.is_file():
+        raise FileNotFoundError(f"找不到视频文件: {video}")
+    _set_working_video(video)
+    return video
 
 
 @lru_cache(maxsize=1)

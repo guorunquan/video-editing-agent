@@ -3,11 +3,17 @@
 用**自然语言**对本地视频做切片、删中间、拼接、加文字、静音/变速，并能预览截图、打开成片的迷你 Agent。
 
 > 你说：「去掉前 5 秒」→「删掉中间 2～4 秒」→「加标题」→「截第 1 秒看看」  
-> 模型选工具 → FFmpeg 导出 → 系统播放器 / 看图打开。
+> 模型选工具 → FFmpeg 导出 → 网页预览 / 系统播放器。
 
-本项目是学习向的 **v0.3**：在 v0.2 播放与文字贴纸之上，补齐删中间段、多段拼接、静音、变速与预览截图，并加上工作视频记忆与更口语的确认文案。设计思路参考开源项目 [OpenChatCut](https://github.com/0xsline/OpenChatCut)（对话驱动剪辑 / 草稿确认后再落地），但刻意做成学生可维护的命令行小工具，而不是完整剪辑器。
+本项目是学习向的 **v0.4**：在 v0.3 剪辑工具链之上，加上**本地 Web 体验壳**（上传 + 对话 + 页内预览）。设计思路参考开源项目 [OpenChatCut](https://github.com/0xsline/OpenChatCut)（对话驱动剪辑 / 草稿确认后再落地），但刻意做成学生可维护的迷你 Agent，而不是完整剪辑器。
 
-各版本功能与变更见 **[CHANGELOG.md](./CHANGELOG.md)**（建议与 Git Tag 同步维护）。
+| 文档 | 给谁看 |
+|------|--------|
+| **[USAGE.md](./USAGE.md)** | **使用者**：怎么安装、开网页、下指令、排障 |
+| [CHANGELOG.md](./CHANGELOG.md) | 版本能力与变更（建议与 Tag 同步） |
+| [LEARNING.md](./LEARNING.md) | 学习者：Agent / Tool Calling 精读 |
+
+---
 
 ---
 
@@ -107,6 +113,13 @@
 - 成功后附带「接下来可以试试」
 - 样式预设 + 工作视频记忆，少说参数也能做完
 
+### 13. 本地 Web 体验站（v0.4）
+
+- 入口：`python web_app.py` → 浏览器打开 `http://127.0.0.1:7860`
+- 上传短视频 → 聊天下指令 → 右侧播放器预览成片 / 截帧条
+- 剪辑工具与确认机制与 CLI 相同；`WEB_MODE` 下不再弹系统播放器
+- 仍是本机单用户 demo（无账号、无公网部署）
+
 ---
 
 ## 技术栈
@@ -117,6 +130,7 @@
 | 大模型 | Google Gemini（Function Calling） |
 | SDK | `google-genai` |
 | 视频处理 | FFmpeg（优先系统 PATH；否则用 `imageio-ffmpeg` 自带二进制） |
+| Web（v0.4） | FastAPI + 静态前端（`static/`） |
 | 配置 | `.env` + `python-dotenv` |
 
 ---
@@ -124,7 +138,7 @@
 ## 架构（很短）
 
 ```text
-用户中文指令
+CLI (main.py) 或 Web (web_app.py + static/)
     │
     ▼
 agent.py          Gemini 多轮 Tool Calling
@@ -133,12 +147,14 @@ agent.py          Gemini 多轮 Tool Calling
 tools.py          probe / trim / cut / concat / mute / speed / text / preview / …
     │
     ▼
-FFmpeg / 系统播放器
+FFmpeg；CLI 用系统播放器 / Web 用页内预览
 ```
 
 | 文件 | 职责 |
 |------|------|
 | `main.py` | 命令行聊天入口 |
+| `web_app.py` | 本地 Web API + 静态页入口 |
+| `static/` | 上传 / 聊天 / 播放器前端 |
 | `agent.py` | 模型循环、系统提示、错误提示（429/503/代理） |
 | `tools.py` | 工具实现 + 给模型看的工具说明书 |
 | `ffmpeg_bin.py` | 定位 ffmpeg 可执行文件 |
@@ -149,126 +165,43 @@ FFmpeg / 系统播放器
 
 ## 快速开始
 
-### 1. 克隆与环境
+完整操作说明（界面、说法、FAQ）见 **[USAGE.md](./USAGE.md)**。这里只给最短路径：
 
 ```bash
 git clone https://github.com/guorunquan/video-editing-agent.git
 cd video-editing-agent
 
 python -m venv .venv
-# Windows:
-.\.venv\Scripts\activate
-# macOS / Linux:
-# source .venv/bin/activate
+# Windows: .\.venv\Scripts\activate
+# macOS / Linux: source .venv/bin/activate
 
 pip install -r requirements.txt
+copy .env.example .env   # macOS / Linux: cp .env.example .env
 ```
 
-### 2. 配置 API Key
+编辑 `.env`：填入 `GEMINI_API_KEY`（国内通常需 VPN；可设 `HTTPS_PROXY`）。  
+申请 Key：https://aistudio.google.com/apikey
 
 ```bash
-copy .env.example .env   # Windows
-# cp .env.example .env   # macOS / Linux
+python web_app.py
+# 浏览器打开 http://127.0.0.1:7860
+# 上传 →「去掉前 3 秒」→「确认」→ 看右侧预览
 ```
 
-编辑 `.env`：
-
-```env
-GEMINI_API_KEY=你的密钥
-GEMINI_MODEL=gemini-flash-lite-latest
-DEFAULT_VIDEO=samples/your.mp4
-# 可选：中文字体（一般不用，Windows 会自动找微软雅黑）
-# VIDEO_FONT=C:\Windows\Fonts\msyh.ttc
-```
-
-- 申请 Key：https://aistudio.google.com/apikey  
-- 国内访问 Google 通常需要 **VPN / 代理**；可设置 `HTTPS_PROXY=http://127.0.0.1:7890`  
-- 若遇 `429` 额度用尽或 `503` 繁忙，可换模型，例如：  
-  `gemini-2.5-flash-lite` / `gemini-flash-lite-latest`
-
-### 3. 放入测试视频
-
-把任意 mp4 放到 `samples/`，或对话时直接给绝对路径。
-
-### 4. 运行
-
-```bash
-python main.py
-```
-
-建议试跑：
-
-```text
-你: 这个视频多长？
-你: 去掉前 5 秒
-你: 确认
-你: 删掉中间 2 秒到 4 秒
-你: 确认
-你: 加标题：决赛高光
-你: 确认
-你: 截第 1 秒看看
-你: 打开刚导出的视频
-```
+命令行入口：`python main.py`（把视频放到 `samples/` 或设 `DEFAULT_VIDEO`）。
 
 ---
 
-## 使用示例
+## 已知限制（v0.4）
 
-**对默认视频切片并预览**
-
-```text
-去掉前 5 秒
-→ 确认
-→ 打开刚导出的视频
-```
-
-**加标题 / 字幕 / 角标**
-
-```text
-加标题：今日高光
-→ 确认
-
-底部加字幕：感谢观看
-→ 确认
-
-右上角贴纸：HIT
-→ 确认
-```
-
-**对任意本地视频切片**
-
-```text
-用 "D:\video\demo.mp4"，只保留 2 秒到 8 秒
-→ 确认
-```
-
-**删中间 / 拼接 / 静音 / 变速**
-
-```text
-删掉中间 2 秒到 4 秒 → 确认
-把 a.mp4 和 b.mp4 拼起来 → 确认
-静音 → 确认
-两倍速 → 确认
-```
-
-**清理导出结果**
-
-```text
-列出已导出的视频
-删除 trim_5_15_xxxxxxxx.mp4
-→ 确认
-```
-
----
-
-## 已知限制（v0.3）
-
-- 无图形时间线 / 拖拽贴纸（命令行 + 系统播放器 / 看图）
+- Web 为本地单用户体验壳：无账号、无多会话隔离、无进度条推送
+- 无图形时间线 / 拖拽贴纸
 - 文字目前是**单行**；复杂多行字幕、动画贴纸未做
 - 无多轨、无工程文件格式、无配乐 / 转场
 - 依赖 Gemini 在线 API（免费额度有限，可能 429/503）
 - 默认快速切片受关键帧影响，可能差半秒；可说「切得更准」走 `precise`
 - 变速仅支持 0.5x～2.0x；拼接与文字叠加需重编码，稍慢
+- Windows 终端偶发 `ConnectionResetError`（拖视频进度条时）：可忽略，详见 USAGE
 
 ---
 
@@ -279,9 +212,9 @@ python main.py
 - [x] v0.1 探测 + 切片 + 导出管理 + 确认机制  
 - [x] v0.2 打开成片 + 文字贴纸（标题/字幕/角标）+ 更顺手的提示  
 - [x] v0.3 删中间 + 拼接 + 静音/变速 + 预览截图 + 工作视频记忆  
-- [ ] v0.4 文字迭代更方便（记住上一份文字计划）  
-- [ ] v0.5 可选本地/国产模型，减轻 Gemini 额度问题  
-- [ ] 更远：配乐、转场、简易 Web UI（本地 demo，非 SaaS）  
+- [x] v0.4 本地 Web：上传 + 对话 + 页内预览  
+- [ ] v0.5 确认 UI / 成片列表 / 会话目录 / 更清晰的失败反馈  
+- [ ] 更远：v1.0 体验打磨、配乐、转场、可选本地模型  
 
 欢迎 Issue / PR。
 
@@ -291,7 +224,7 @@ python main.py
 
 | OpenChatCut | 本项目 |
 |-------------|--------|
-| 完整多轨编辑器 + Remotion + MCP | 命令行迷你 Agent |
+| 完整多轨编辑器 + Remotion + MCP | CLI + 本地 Web 迷你 Agent |
 | 时间线状态机 | 直接 FFmpeg 导出文件 |
 | 草稿会话 / 人工批准 | `confirmed=false/true` |
 | 适合生产向剪辑 | 适合学习 Agent 与简历作品 |

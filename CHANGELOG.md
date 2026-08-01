@@ -10,6 +10,7 @@
 git checkout v0.1.0
 git checkout v0.2.0
 git checkout v0.3.0
+git checkout v0.4.0
 git checkout main
 ```
 
@@ -21,9 +22,44 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 
 计划中（尚未发布，仅作备忘）：
 
-- v0.4 文字计划记忆（「字号改成 40」少重复确认）/ 更细的样式
-- v0.5 可选本地/国产模型
-- 更远：配乐、转场、简易 Web UI（本地 demo）
+- v0.5 确认 UI 卡片化 / 成片列表点选 / 会话目录隔离 / 失败日志更可读
+- 更远：v1.0 体验站打磨、配乐、转场、可选本地模型
+
+文档（不单独发版也可合进下一次 tag）：
+
+- 新增面向使用者的 [USAGE.md](./USAGE.md)；README / LEARNING 交叉链接已同步
+
+---
+
+## [0.4.0] — 2026-08-01
+
+**主题：** 本地 Web 体验壳——上传 + 对话 + 页内预览  
+
+Tag：`v0.4.0`（发布时打）
+
+### Added
+
+- `web_app.py`：FastAPI 本地站（默认 `http://127.0.0.1:7860`）
+  - 上传视频到 `uploads/` 并设为工作视频
+  - `/api/chat` 复用现有 Gemini Agent 与全部剪辑工具
+  - `/api/state` 返回工作视频 / 最新成片 / 预览图
+  - `/media/...` 安全提供 `uploads/`、`output/`、`samples/` 内文件
+- `static/`：单页前端（上传、聊天、播放器、截帧条、快捷指令）
+- `WEB_MODE=1` 时 `open_output` 不再弹系统播放器，改为提示网页预览
+- `get_media_state` / `set_working_video`：给 Web 层读状态、设片源
+- 使用说明：[USAGE.md](./USAGE.md)（安装、网页操作、常用说法、FAQ）
+
+### Changed
+
+- 剪辑能力仍与 v0.3 相同；CLI（`python main.py`）保留
+- README / 路线图：Web UI 前移为 v0.4；预览优先较新的工作视频，避免上传后仍播旧成片
+
+### Notes
+
+- 本机单用户 demo，无账号、无多会话隔离
+- 上传默认上限 100MB（可用 `WEB_MAX_UPLOAD_MB` 调整）
+- 仍依赖本机 FFmpeg + Gemini API / VPN
+- Windows 拖视频进度条时终端可能刷 `ConnectionResetError`，一般可忽略（见 USAGE）
 
 ---
 
@@ -117,6 +153,7 @@ Tag：`v0.1.0`（对应提交 `79f2087`）
 | 0.1.0 | 探测 + 切片 + 导出管理 + 确认 | `v0.1.0` |
 | 0.2.0 | + 打开播放 + 文字贴纸 + 更顺手提示 | `v0.2.0` |
 | 0.3.0 | + 删中间 / 拼接 / 静音 / 变速 / 截帧预览 | `v0.3.0` |
+| 0.4.0 | + 本地 Web：上传 / 对话 / 页内预览 | `v0.4.0` |
 
 发布新版本时建议同步：
 

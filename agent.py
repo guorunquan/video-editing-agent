@@ -37,6 +37,7 @@ SYSTEM_PROMPT = """
    - 「底部字幕」→ style=subtitle；「角标/贴纸」→ style=sticker
    - 未指定源文件时优先最新成片。
 10. 「打开 / 播放 / 看看效果」→ open_output（可省略=最新）。
+    在网页模式中，open_output 不会弹系统播放器，页面右侧会刷新预览。
 11. 列表 → list_outputs；删导出成片 → delete_output（只能删 output/）。
 12. 会改文件的操作必须先 confirmed=false；用户确认后再 confirmed=true。
     export_preview_frame / probe_video / open_output / list_outputs 不需要确认。

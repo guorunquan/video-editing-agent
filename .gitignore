@@ -1,5 +1,7 @@
 samples/*
 !samples/.gitkeep
+uploads/*
+!uploads/.gitkeep
 output/*
 !output/.gitkeep
 data/

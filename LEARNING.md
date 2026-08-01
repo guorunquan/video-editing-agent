@@ -3,6 +3,8 @@
 面向：准大四、Python 基础一般、想投 **Agent 开发实习** 的同学。  
 仓库：[video-editing-agent](https://github.com/guorunquan/video-editing-agent)
 
+**先会用再精读：** 产品怎么开、怎么说指令 → [USAGE.md](./USAGE.md)；仓库总览与安装 → [README.md](./README.md)。
+
 目标不是背完整 FFmpeg，而是能讲清、能改、能扩展下面这条链路：
 
 ```text
@@ -18,6 +20,7 @@
 | 语言 | Python 3 | 全部业务逻辑 |
 | LLM | Google Gemini | 「脑子」：理解中文、决定调哪个工具 |
 | SDK | `google-genai` | 调用 Gemini、声明 tools、收发多轮对话 |
+| Web（v0.4） | FastAPI + `static/` | 上传 / 对话 / 页内预览，复用同一套 Agent |
 | 配置 | `.env` + `python-dotenv` | 存放 API Key / 模型名（不写进代码） |
 | 视频 | FFmpeg（或 `imageio-ffmpeg` 自带） | 「手」：真正剪视频、读时长 |
 | 进程 | `subprocess` | 在 Python 里启动 FFmpeg 命令 |
@@ -40,7 +43,8 @@
 | 3 | `tools.py` 后半 | `TOOL_DECLARATIONS` 和 `run_tool` 是什么关系？ |
 | 4 | `agent.py` 的 `chat()` | 模型如何「想调工具 → 你执行 → 再问模型」？ |
 | 5 | `ffmpeg_bin.py` | 为什么找不到系统 FFmpeg 也能跑？ |
-| 6 | `.env.example` | 哪些配置影响线上行为？ |
+| 6 | `web_app.py` + `static/` | Web 如何复用同一个 Agent？（上传 → chat → 预览 URL） |
+| 7 | `.env.example` | 哪些配置影响线上行为？ |
 
 ---
 
@@ -263,7 +267,7 @@ loop:
 
 ## 七、面试可以怎么说（基于本项目）
 
-> 我做了一个自然语言视频切片 Agent。使用 Gemini Function Calling：模型根据工具描述选择 `probe_video` / `trim_keep` 等，实际剪辑由 Python 调用 FFmpeg 完成。对写操作实现了确认机制，避免模型直接改文件。项目开源在 GitHub，后续计划加字幕叠加等能力。
+> 我做了一个自然语言视频剪辑 Agent（CLI + 本地 Web）。使用 Gemini Function Calling：模型根据工具描述选择 `probe_video` / `trim_keep` 等，实际剪辑由 Python 调用 FFmpeg 完成。对写操作实现了确认机制，避免模型直接改文件。v0.4 用 FastAPI 做了上传与页内预览，工具层仍复用同一套。项目开源在 GitHub。
 
 准备好被追问：
 
