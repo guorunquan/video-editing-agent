@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 from google import genai
@@ -19,7 +20,8 @@ SYSTEM_PROMPT = """
 语气：
 - 用简洁中文，像靠谱的同学帮忙，不要官腔。
 - 成功后主动提 1～2 个自然下一步，不要一次列一大堆。
-- 待确认时：用人话说明会改什么，并请用户回复「确认」。
+- 待确认时：用人话说明会改什么，并请用户回复「确认」（网页也会出确认按钮）。
+- 用户说「取消 / 不要执行 / 先别改」时：不要调用 confirmed=true，简短确认已取消即可。
 
 规则：
 1. 用户给出新视频路径时：先 probe_video(path=该路径)，再按要求操作。
@@ -29,6 +31,7 @@ SYSTEM_PROMPT = """
 4. 「删掉中间 / 去掉 A 到 B 秒（不要两端）」= cut_out(start_sec=A, end_sec=B)。
    注意：cut_out 与 trim_keep 相反，不要搞混。
 5. 「把这几段拼起来 / 拼接」= concat_videos(clips=...)。
+   若同时要求「命名为 xxx / 改名叫拼接」：先完成拼接，再 rename_output(new_name=xxx)。
 6. 「静音 / 去掉声音」= mute_audio。
 7. 「两倍速 / 慢放 0.5 倍」= change_speed(factor=...)。
 8. 「截一帧 / 预览第 N 秒 / 看看字幕位置」= export_preview_frame（无需确认）。
@@ -38,10 +41,12 @@ SYSTEM_PROMPT = """
    - 未指定源文件时优先最新成片。
 10. 「打开 / 播放 / 看看效果」→ open_output（可省略=最新）。
     在网页模式中，open_output 不会弹系统播放器，页面右侧会刷新预览。
-11. 列表 → list_outputs；删导出成片 → delete_output（只能删 output/）。
+11. 列表 → list_outputs；删导出成片 → delete_output；改名 → rename_output（只能动 output/）。
 12. 会改文件的操作必须先 confirmed=false；用户确认后再 confirmed=true。
     export_preview_frame / probe_video / open_output / list_outputs 不需要确认。
+    用户已确认「拼接并命名」时：concat confirmed=true 成功后，接着 rename_output(..., confirmed=true)。
 13. 用户要求「切得更准」时给 trim_keep 加 precise=true。
+14. 用户取消待确认计划时，不要执行写操作。
 """.strip()
 
 
@@ -95,14 +100,18 @@ class VideoAgent:
         self.model = model
         self.tools = _build_tools()
         self.history: list[types.Content] = []
+        # 最近一次 chat 是否进入「待确认」状态（工具结果含【待确认】）
+        self.last_needs_confirm = False
 
     def chat(self, user_text: str) -> str:
+        self.last_needs_confirm = False
         self.history.append(
             types.Content(role="user", parts=[types.Part(text=user_text)])
         )
 
         for round_i in range(6):
             print("  ... requesting Gemini")
+            t0 = time.time()
             try:
                 response = self.client.models.generate_content(
                     model=self.model,
@@ -112,11 +121,18 @@ class VideoAgent:
                         tools=self.tools,
                     ),
                 )
+                print(f"  ... Gemini ok in {time.time() - t0:.1f}s")
             except Exception as e:  # noqa: BLE001
+                print(f"  ... Gemini fail in {time.time() - t0:.1f}s: {type(e).__name__}")
                 msg = str(e)
                 hint = (
-                    "\n请确认 VPN 已开。"
-                    if "10061" in msg or "ConnectError" in type(e).__name__
+                    "\n请确认 VPN 为系统代理/TUN，或在 .env 设置 HTTPS_PROXY。"
+                    if (
+                        "10060" in msg
+                        or "10061" in msg
+                        or "ConnectTimeout" in type(e).__name__
+                        or "ConnectError" in type(e).__name__
+                    )
                     else ""
                 )
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
@@ -155,6 +171,11 @@ class VideoAgent:
                 args = _fn_args_to_dict(call.args)
                 print(f"  [tool] {name}({args})")
                 result = run_tool(name, args)
+                if "【待确认】" in (result or ""):
+                    self.last_needs_confirm = True
+                # 真正执行成功后，不再视为待确认
+                if '"status": "ok"' in (result or "") or '"status":"ok"' in (result or ""):
+                    self.last_needs_confirm = False
                 preview = result if len(result) < 500 else result[:500] + "..."
                 print(f"  [result] {preview}")
                 result_parts.append(

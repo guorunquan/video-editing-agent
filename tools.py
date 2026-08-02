@@ -276,6 +276,17 @@ def _open_path(target: Path) -> str:
     return f"已用系统默认程序打开：\n{target}"
 
 
+def _preview_at_sec(name: str) -> float | None:
+    """从 preview_1.0s_xxx.png 解析秒数。"""
+    m = re.search(r"preview_(\d+(?:\.\d+)?)s_", name or "", flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
 def get_media_state() -> dict:
     """给 Web UI 用的媒体状态（工作视频 / 成片 / 预览图）。"""
     working = _get_working_video()
@@ -292,12 +303,17 @@ def get_media_state() -> dict:
     )
 
     def _item(p: Path) -> dict:
-        return {
+        data = {
             "name": p.name,
             "path": str(p.resolve()),
             "size_mb": round(p.stat().st_size / (1024 * 1024), 2),
             "mtime": p.stat().st_mtime,
         }
+        at_sec = _preview_at_sec(p.name)
+        if at_sec is not None:
+            data["at_sec"] = at_sec
+            data["label"] = f"第 {at_sec:g} 秒"
+        return data
 
     latest_output = outputs[0] if outputs else None
     latest_preview = previews[0] if previews else None
@@ -317,6 +333,7 @@ def get_media_state() -> dict:
         "latest_output": _item(latest_output) if latest_output else None,
         "latest_preview": _item(latest_preview) if latest_preview else None,
         "play_path": str(play.resolve()) if play else None,
+        "output_dir": str(OUTPUT_DIR.resolve()),
         "outputs": [_item(p) for p in outputs[:20]],
         "previews": [_item(p) for p in previews[:10]],
     }
@@ -968,7 +985,7 @@ def list_outputs() -> str:
         + _hint(
             "打开最新成片 / 打开某一个文件名",
             "把其中几段拼起来",
-            "截一张预览图 / 加文字贴纸",
+            "改名叫「拼接」/ 加文字贴纸",
         )
     )
 
@@ -991,6 +1008,66 @@ def delete_output(name_or_path: str, confirmed: bool = False) -> str:
 
     candidate.unlink()
     return f"已删除：{candidate}" + _hint("列出剩下的成片", "继续切片或加文字做新成片")
+
+
+def safe_output_stem(name: str) -> str:
+    """
+    清洗成片文件名主体。
+    不能用 Path.stem：否则「1.5倍速」会被切成「1」。
+    """
+    text = (name or "").strip().strip('"')
+    lower = text.lower()
+    for suf in sorted(VIDEO_SUFFIXES, key=len, reverse=True):
+        if lower.endswith(suf):
+            text = text[: -len(suf)]
+            break
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff.\-]+", "_", text, flags=re.UNICODE)
+    cleaned = cleaned.strip(" ._")
+    return (cleaned or "video")[:80]
+
+
+def rename_output(
+    new_name: str,
+    name_or_path: str | None = None,
+    confirmed: bool = False,
+) -> str:
+    """重命名 output/ 里的成片（可省略源=最新成片）。"""
+    raw_new = (new_name or "").strip().strip('"')
+    if not raw_new:
+        return "错误：请提供新文件名。例如「拼接」或「1.5倍速视频」。"
+
+    try:
+        src = _resolve_output(name_or_path)
+    except FileNotFoundError as e:
+        return str(e)
+
+    stem = safe_output_stem(raw_new)
+    dest = (OUTPUT_DIR / f"{stem}{src.suffix.lower()}").resolve()
+    try:
+        dest.relative_to(OUTPUT_DIR.resolve())
+    except ValueError:
+        return "错误：只能重命名 output/ 内的成片。"
+
+    if dest.exists() and dest != src.resolve():
+        return f"错误：已存在同名文件：{dest.name}。请换一个名字。"
+
+    plan = {
+        "action": "rename_output",
+        "from": str(src),
+        "to": str(dest),
+        "new_name": dest.name,
+    }
+    summary = f"将把「{src.name}」重命名为「{dest.name}」"
+    if not confirmed:
+        return _pending("重命名成片", summary, plan, "rename_output")
+
+    if dest != src.resolve():
+        src.rename(dest)
+    _set_working_video(dest)
+    return (
+        f"已重命名：{src.name} → {dest.name}\n路径：{dest}"
+        + _hint("打开刚改名的视频看看", "继续拼接 / 加文字 / 变速")
+    )
 
 
 def open_output(name_or_path: str | None = None) -> str:
@@ -1353,6 +1430,29 @@ TOOL_DECLARATIONS = [
             "required": ["name_or_path"],
         },
     },
+    {
+        "name": "rename_output",
+        "description": (
+            "重命名 output/ 成片。用户说「改名叫拼接」「命名为 xxx」「文件名叫做…」时调用。"
+            "可省略源文件=最新成片。先 confirmed=false；若用户已确认整段包含改名的计划，可 confirmed=true。"
+            "注意：名字里可含小数点，如「1.5倍速」。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "new_name": {
+                    "type": "string",
+                    "description": "新文件名，可不带后缀，如「拼接」「1.5倍速视频」",
+                },
+                "name_or_path": {
+                    "type": "string",
+                    "description": "要改名的成片；省略=最新成片",
+                },
+                "confirmed": {"type": "boolean", "description": "false=预览；true=执行"},
+            },
+            "required": ["new_name"],
+        },
+    },
 ]
 
 
@@ -1417,6 +1517,12 @@ def run_tool(name: str, args: dict) -> str:
     if name == "delete_output":
         return delete_output(
             name_or_path=str(args.get("name_or_path", "")),
+            confirmed=bool(args.get("confirmed", False)),
+        )
+    if name == "rename_output":
+        return rename_output(
+            new_name=str(args.get("new_name", "")),
+            name_or_path=args.get("name_or_path"),
             confirmed=bool(args.get("confirmed", False)),
         )
     return f"未知工具：{name}"

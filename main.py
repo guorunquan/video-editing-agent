@@ -26,11 +26,11 @@ def main() -> None:
         default_video = Path(__file__).resolve().parent / default_video
 
     print("=" * 50)
-    print("Mini Video Agent v0.4 (Gemini + FFmpeg)")
+    print("Mini Video Agent v0.5 (Gemini + FFmpeg)")
     print(f"model: {model}")
     print(f"default video: {default_video}")
     print("exists:", default_video.exists())
-    print("CLI 入口；网页：python web_app.py｜用法：USAGE.md")
+    print("CLI 入口；网页：python web_app.py｜用法 USAGE.md｜排障 PROBLEMS.md｜交接 HANDOFF.md")
     print("可以这样说：")
     print("  - 这个视频多长？")
     print("  - 去掉前 5 秒")

@@ -3,7 +3,14 @@
 面向：准大四、Python 基础一般、想投 **Agent 开发实习** 的同学。  
 仓库：[video-editing-agent](https://github.com/guorunquan/video-editing-agent)
 
-**先会用再精读：** 产品怎么开、怎么说指令 → [USAGE.md](./USAGE.md)；仓库总览与安装 → [README.md](./README.md)。
+**相关文档：**
+
+| 文档 | 用途 |
+|------|------|
+| [USAGE.md](./USAGE.md) | 先会用：安装与说法 |
+| [README.md](./README.md) | 仓库总览 |
+| [PROBLEMS.md](./PROBLEMS.md) | 排障与真实踩坑 |
+| [HANDOFF.md](./HANDOFF.md) | 工程交接（扩展工具前建议读） |
 
 目标不是背完整 FFmpeg，而是能讲清、能改、能扩展下面这条链路：
 
@@ -20,7 +27,7 @@
 | 语言 | Python 3 | 全部业务逻辑 |
 | LLM | Google Gemini | 「脑子」：理解中文、决定调哪个工具 |
 | SDK | `google-genai` | 调用 Gemini、声明 tools、收发多轮对话 |
-| Web（v0.4） | FastAPI + `static/` | 上传 / 对话 / 页内预览，复用同一套 Agent |
+| Web（v0.4+） | FastAPI + `static/` | 上传 / 对话 / 预览 / 多会话记录，复用同一套 Agent |
 | 配置 | `.env` + `python-dotenv` | 存放 API Key / 模型名（不写进代码） |
 | 视频 | FFmpeg（或 `imageio-ffmpeg` 自带） | 「手」：真正剪视频、读时长 |
 | 进程 | `subprocess` | 在 Python 里启动 FFmpeg 命令 |
@@ -43,8 +50,9 @@
 | 3 | `tools.py` 后半 | `TOOL_DECLARATIONS` 和 `run_tool` 是什么关系？ |
 | 4 | `agent.py` 的 `chat()` | 模型如何「想调工具 → 你执行 → 再问模型」？ |
 | 5 | `ffmpeg_bin.py` | 为什么找不到系统 FFmpeg 也能跑？ |
-| 6 | `web_app.py` + `static/` | Web 如何复用同一个 Agent？（上传 → chat → 预览 URL） |
-| 7 | `.env.example` | 哪些配置影响线上行为？ |
+| 6 | `web_app.py` + `static/` | Web 如何复用 Agent？确认按钮 / 成片列表 / 多会话 history？ |
+| 7 | `HANDOFF.md` + `PROBLEMS.md` | 工程约定与常见坑（代理、缓存、文件名） |
+| 8 | `.env.example` | 哪些配置影响线上行为？ |
 
 ---
 
