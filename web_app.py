@@ -65,6 +65,7 @@ app = FastAPI(title="Mini Video Agent", version="0.5.1")
 
 _agent: VideoAgent | None = None
 _chat_lock = False
+_job_state: dict[str, dict] = {}
 _sessions: dict = {"active_id": "", "sessions": []}
 
 
@@ -256,6 +257,11 @@ def _needs_confirm(reply: str, agent: VideoAgent | None = None) -> bool:
     )
 
 
+def _strip_machine_markers(text: str) -> str:
+    """不把给 Agent 解析用的确认 marker 展示给用户。"""
+    return re.sub(r"__VIDEO_AGENT_PENDING__\{[^\n]*\}\n?", "", text or "").strip()
+
+
 def _friendly_error(exc: BaseException) -> str:
     msg = str(exc)
     name = type(exc).__name__
@@ -426,13 +432,28 @@ class HistorySelectRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=64)
 
 
+def _job_update(job_id: str, **values: object) -> dict:
+    job = _job_state.setdefault(job_id, {"id": job_id})
+    job.update(values)
+    job["updated_at"] = time.time()
+    return job
+
+
 _load_sessions()
 
 
 @app.get("/api/health")
 def health() -> dict:
     model = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    return {"ok": True, "version": "0.5.1", "model": model, "web_mode": True}
+    return {"ok": True, "version": "1.0.0", "model": model, "web_mode": True}
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job(job_id: str) -> dict:
+    job = _job_state.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="找不到处理任务")
+    return job
 
 
 @app.get("/api/state")
@@ -567,17 +588,22 @@ def api_chat(body: ChatRequest) -> dict:
             detail="上一条还在处理中，请稍等完成后再发（重复点击会堆请求）。",
         )
 
+    job_id = uuid.uuid4().hex[:12]
+    _job_update(job_id, status="running", stage="理解指令", message="正在理解你的剪辑要求")
     _append_chat("user", text)
     _chat_lock = True
     agent = _get_agent()
     try:
+        _job_update(job_id, stage="调用剪辑工具", message="正在分析视频并准备剪辑")
         reply = agent.chat(text)
     except SystemExit as e:
         detail = str(e) or "请检查 .env 中的 GEMINI_API_KEY"
+        _job_update(job_id, status="failed", stage="失败", message=detail)
         _append_chat("assistant", detail)
         raise HTTPException(status_code=500, detail=detail) from e
     except Exception as e:  # noqa: BLE001
         detail = _friendly_error(e)
+        _job_update(job_id, status="failed", stage="失败", message=detail)
         _append_chat("assistant", detail)
         raise HTTPException(status_code=500, detail=detail) from e
     finally:
@@ -586,13 +612,23 @@ def api_chat(body: ChatRequest) -> dict:
     if "ConnectTimeout" in reply or "10060" in reply or "10061" in reply:
         reply = _friendly_error(TimeoutError(reply))
 
+    reply = _strip_machine_markers(reply)
     _append_chat("assistant", reply)
+    confirmation = getattr(agent, "last_confirmation", None)
+    _job_update(job_id, status="completed", stage="完成", message="处理完成")
     return {
+        "job_id": job_id,
         "reply": reply,
         "needs_confirm": _needs_confirm(reply, agent),
+        "confirmation": confirmation,
         "state": _enrich_state(),
         "history": _history_payload(),
     }
+
+
+@app.get("/api/outputs/download/{name:path}")
+def api_download_output(name: str):
+    return FileResponse(_output_file(name), filename=Path(name).name)
 
 
 @app.post("/api/reset")

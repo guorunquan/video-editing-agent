@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -102,9 +103,11 @@ class VideoAgent:
         self.history: list[types.Content] = []
         # 最近一次 chat 是否进入「待确认」状态（工具结果含【待确认】）
         self.last_needs_confirm = False
+        self.last_confirmation: dict[str, Any] | None = None
 
     def chat(self, user_text: str) -> str:
         self.last_needs_confirm = False
+        self.last_confirmation = None
         self.history.append(
             types.Content(role="user", parts=[types.Part(text=user_text)])
         )
@@ -173,9 +176,16 @@ class VideoAgent:
                 result = run_tool(name, args)
                 if "【待确认】" in (result or ""):
                     self.last_needs_confirm = True
+                    marker = re.search(r"__VIDEO_AGENT_PENDING__(\{[^\n]*\})", result or "")
+                    if marker:
+                        try:
+                            self.last_confirmation = json.loads(marker.group(1))
+                        except json.JSONDecodeError:
+                            self.last_confirmation = None
                 # 真正执行成功后，不再视为待确认
                 if '"status": "ok"' in (result or "") or '"status":"ok"' in (result or ""):
                     self.last_needs_confirm = False
+                    self.last_confirmation = None
                 preview = result if len(result) < 500 else result[:500] + "..."
                 print(f"  [result] {preview}")
                 result_parts.append(

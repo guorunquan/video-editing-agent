@@ -10,18 +10,27 @@
       href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/style.css?v=0.5.2" />
+    <link rel="stylesheet" href="/style.css?v=1.0.0" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true"></div>
     <main class="shell">
       <header class="brand">
         <p class="brand-mark">Mini Video Agent</p>
-        <p class="brand-line">用中文对话剪视频 · 本地体验站 v0.5</p>
+        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.0</p>
       </header>
 
       <section class="stage">
         <div class="player-panel">
+          <section class="welcome-card">
+            <strong>三步完成一次剪辑</strong>
+            <span>上传视频 → 用中文描述 → 确认后导出</span>
+            <div class="welcome-actions">
+              <button type="button" class="quick-action" data-prompt="去掉前 3 秒">去掉片头 3 秒</button>
+              <button type="button" class="quick-action" data-prompt="加标题：产品演示">加标题</button>
+              <button type="button" class="quick-action" data-prompt="截第 5 秒看看">截帧预览</button>
+            </div>
+          </section>
           <div class="player-frame">
             <video id="player" controls playsinline></video>
             <div id="player-empty" class="player-empty">
@@ -93,6 +102,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=0.5.2"></script>
+    <script src="/app.js?v=1.0.0"></script>
   </body>
 </html>

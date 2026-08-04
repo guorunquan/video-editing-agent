@@ -53,6 +53,19 @@ def _hint(*lines: str) -> str:
 def _pending(title: str, summary: str, plan: dict, tool_name: str) -> str:
     """口语化待确认文案 + 精简计划（方便模型原样重调）。"""
     return (
+        "__VIDEO_AGENT_PENDING__"
+        + json.dumps(
+            {
+                "status": "pending",
+                "needs_confirm": True,
+                "title": title,
+                "summary": summary,
+                "tool_name": tool_name,
+                "plan": plan,
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
         f"【待确认】{title}\n"
         f"{summary}\n"
         f"计划详情：\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n"

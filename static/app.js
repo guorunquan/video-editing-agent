@@ -88,13 +88,16 @@
     messagesEl.querySelectorAll(".confirm-card").forEach((el) => el.remove());
   }
 
-  function addConfirmCard() {
+  function addConfirmCard(details = null) {
     if (!messagesEl) return null;
     clearConfirmCards();
     const wrap = document.createElement("div");
     wrap.className = "confirm-card";
+    const title = escapeHtml(details?.title || "需要你确认才会改文件");
+    const summary = escapeHtml(details?.summary || "确认后才会写入 output/，取消不会修改原片。");
     wrap.innerHTML = `
-      <p>需要你确认才会改文件</p>
+      <p>${title}</p>
+      <div class="confirm-summary">${summary.replace(/\n/g, "<br />")}</div>
       <div class="confirm-actions">
         <button type="button" class="btn primary" data-act="confirm">确认执行</button>
         <button type="button" class="btn ghost" data-act="cancel">取消</button>
@@ -239,6 +242,7 @@
       actions.innerHTML = `
         <button type="button" class="mini" data-act="rename">改名</button>
         <button type="button" class="mini" data-act="reveal">位置</button>
+        <a class="mini mini-link" data-act="download" href="/api/outputs/download/${encodeURIComponent(name)}">下载</a>
       `;
       actions.querySelector('[data-act="rename"]').addEventListener("click", (e) => {
         e.stopPropagation();
@@ -491,7 +495,7 @@
       }
       const reply = decorateReply(data.reply || "(无回复)");
       addBubble(reply, "assistant");
-      if (looksLikeConfirm(reply, data.needs_confirm)) addConfirmCard();
+      if (looksLikeConfirm(reply, data.needs_confirm)) addConfirmCard(data.confirmation);
       else clearConfirmCards();
       currentPlayUrl = "";
       applyState(data.state);
@@ -541,6 +545,10 @@
       sendChat(btn.dataset.prompt);
     });
   }
+
+  document.querySelectorAll(".quick-action").forEach((button) => {
+    button.addEventListener("click", () => sendChat(button.dataset.prompt || ""));
+  });
 
   if (fileInput) {
     fileInput.addEventListener("change", async () => {
@@ -652,7 +660,7 @@
   }
 
   addBubble(
-    "欢迎。对话记录可按日期切换会话；成片可「改名 / 位置」；截帧下方会标第几秒。页面异常时请 Ctrl+F5。",
+    "欢迎！上传视频后直接用中文描述需求。修改文件前会先展示计划，确认后才执行；成片可以播放、下载、改名或打开位置。",
     "system"
   );
 

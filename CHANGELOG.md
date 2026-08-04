@@ -19,7 +19,16 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 
 ---
 
-## [Unreleased]
+## [1.0.0] - 2026-08-04
+
+### Added（v1.0）
+
+- Web 首页增加三步引导和常用示例任务
+- 待确认计划增加机器可读结构，前端展示具体操作摘要
+- 增加处理任务状态接口 `/api/jobs/{job_id}`
+- 成片列表增加下载入口
+- 健康检查版本更新为 v1.0.0
+- 增加文件名、确认机制、时间参数的最小回归测试
 
 ### Added（v0.5 之后、尚未单独打 tag）
 
@@ -38,10 +47,9 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 - 待确认按钮依赖模型口语导致不出现（改为看工具结果 `last_needs_confirm`）
 - 上传后仍播旧成片；前端超时与 VPN 提示不清晰等问题（见 PROBLEMS）
 
-### 计划中
+### 下一步
 
-- v1.0 体验站打磨（见 HANDOFF）
-- v1.5 可选：配乐/转场、文字计划记忆、本地模型等
+- v1.5：转写、文本驱动剪辑、自动字幕、竖屏导出
 
 ---
 
