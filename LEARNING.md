@@ -204,7 +204,7 @@ Agent 开发不只写 happy path，还要会提示用户怎么恢复。
 15. argparse / Typer（做更好的命令行）  
 16. FastAPI（做成网页/API Agent）  
 17. asyncio（并发、流式输出）  
-18. 单元测试 `pytest`（给 `trim_keep` 写测试）  
+18. 单元测试（当前使用 `unittest discover -s tests`，覆盖文件名、确认机制、路径与时间参数）
 19. 日志 `logging`（代替到处 `print`）  
 
 ---

@@ -1,6 +1,6 @@
 # 问题与排障记录
 
-记录本项目从 CLI 迷你 Agent 做到 Web v0.5 过程中**真实踩过的坑**、原因与解决办法。  
+记录本项目从 CLI 迷你 Agent 做到 Web v1.0 过程中**真实踩过的坑**、原因与解决办法。
 给使用者排障，也给后续接手的 Agent / 开发者避雷。
 
 使用者快速用法见 [USAGE.md](./USAGE.md)；版本能力见 [CHANGELOG.md](./CHANGELOG.md)。
