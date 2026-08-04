@@ -1,5 +1,5 @@
 """
-Mini Video Agent Web UI（v0.5）
+Mini Video Agent Web UI（v1.5）
 
 本地体验站：上传 → 对话剪辑 → 确认按钮 / 成片点选 / 多会话记录。
 复用 agent.py / tools.py。
@@ -61,7 +61,7 @@ SESSION_GAP_SEC = 3 * 3600  # 超过 3 小时无消息 → 自动新开会话
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 MEDIA_ROOTS = (UPLOAD_DIR, OUTPUT_DIR, SAMPLES_DIR)
 
-app = FastAPI(title="Mini Video Agent", version="0.5.1")
+app = FastAPI(title="Mini Video Agent", version="1.5.0")
 
 _agent: VideoAgent | None = None
 _chat_lock = False
@@ -330,6 +330,20 @@ def _output_file(name: str) -> Path:
     return candidate
 
 
+def _preview_file(name: str) -> Path:
+    text = (name or "").strip().strip('"')
+    candidate = (PREVIEW_DIR / Path(text).name).resolve()
+    try:
+        candidate.relative_to(PREVIEW_DIR.resolve())
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail="只能操作 previews/ 内的图片") from e
+    if candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(status_code=400, detail="不是支持的截帧图片")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail=f"找不到截帧：{candidate.name}")
+    return candidate
+
+
 def _to_media_url(path: str | Path | None) -> str | None:
     if not path:
         return None
@@ -428,6 +442,14 @@ class RevealRequest(BaseModel):
     name: str | None = None
 
 
+class OutputUseRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class PreviewDeleteRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+
+
 class HistorySelectRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=64)
 
@@ -445,7 +467,7 @@ _load_sessions()
 @app.get("/api/health")
 def health() -> dict:
     model = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    return {"ok": True, "version": "1.0.0", "model": model, "web_mode": True}
+    return {"ok": True, "version": "1.5.0", "model": model, "web_mode": True}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -533,6 +555,33 @@ def api_reveal_output(body: RevealRequest) -> dict:
         "message": f"已在文件管理器中打开：{shown}",
         "path": shown,
         "output_dir": str(OUTPUT_DIR.resolve()),
+    }
+
+
+@app.post("/api/outputs/use")
+def api_use_output(body: OutputUseRequest) -> dict:
+    target = _output_file(body.name)
+    set_working_video(target)
+    agent = _get_agent()
+    agent.history.clear()
+    note = f"已将成片设为当前工作视频：{target.name}。现在可以直接继续剪辑。"
+    _append_chat("system", note)
+    return {
+        "ok": True,
+        "message": note,
+        "state": _enrich_state(),
+        "history": _history_payload(),
+    }
+
+
+@app.post("/api/previews/delete")
+def api_delete_preview(body: PreviewDeleteRequest) -> dict:
+    target = _preview_file(body.name)
+    target.unlink()
+    return {
+        "ok": True,
+        "message": f"已删除截帧：{target.name}",
+        "state": _enrich_state(),
     }
 
 
@@ -677,7 +726,7 @@ if __name__ == "__main__":
     host = (os.getenv("WEB_HOST") or "127.0.0.1").strip()
     port = int(os.getenv("WEB_PORT") or "7860")
     print("=" * 50)
-    print("Mini Video Agent Web v0.5.1")
+    print("Mini Video Agent Web v1.5.0")
     print(f"open: http://{host}:{port}")
     print("多会话记录 · 成片重命名/打开文件夹 · 截帧秒数")
     print("使用说明见 USAGE.md")

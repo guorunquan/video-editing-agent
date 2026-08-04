@@ -115,11 +115,13 @@ body {
   font-size: 0.88rem;
 }
 
-.welcome-actions {
+.guide-lines {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
   margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .quick-action {
@@ -131,6 +133,13 @@ body {
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
+}
+
+.chips .ai-chip {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 700;
 }
 
 .player-frame {
@@ -334,6 +343,11 @@ body {
   align-items: center;
 }
 
+.out-actions .primary-mini {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .output-list li.empty-hint {
   cursor: default;
   justify-content: center;
@@ -360,6 +374,29 @@ body {
   color: var(--muted);
   font: inherit;
   font-size: 0.78rem;
+}
+
+.preview-open {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.preview-delete {
+  border: 0;
+  background: transparent;
+  color: #a84b4b;
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
 }
 
 .preview-card img {

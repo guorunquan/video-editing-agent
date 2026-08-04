@@ -207,6 +207,48 @@
     }
   }
 
+  async function useOutput(name) {
+    try {
+      const res = await fetch("/api/outputs/use", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addBubble(formatDetail(data.detail) || "设置当前视频失败", "system");
+        return;
+      }
+      addBubble(data.message || "已设为当前工作视频", "system");
+      if (data.state) {
+        currentPlayUrl = "";
+        applyState(data.state);
+      }
+    } catch (err) {
+      addBubble(friendlyClientError(err), "system");
+    }
+  }
+
+  async function deletePreview(name) {
+    if (!window.confirm(`删除这张截帧预览？\n${name}`)) return;
+    try {
+      const res = await fetch("/api/previews/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addBubble(formatDetail(data.detail) || "删除截帧失败", "system");
+        return;
+      }
+      addBubble(data.message || "已删除截帧", "system");
+      if (data.state) applyState(data.state);
+    } catch (err) {
+      addBubble(friendlyClientError(err), "system");
+    }
+  }
+
   function renderOutputs(outputs) {
     if (!outputList) return;
     outputList.innerHTML = "";
@@ -240,10 +282,15 @@
       const actions = document.createElement("div");
       actions.className = "out-actions";
       actions.innerHTML = `
+        <button type="button" class="mini primary-mini" data-act="use">操作此视频</button>
         <button type="button" class="mini" data-act="rename">改名</button>
         <button type="button" class="mini" data-act="reveal">位置</button>
         <a class="mini mini-link" data-act="download" href="/api/outputs/download/${encodeURIComponent(name)}">下载</a>
       `;
+      actions.querySelector('[data-act="use"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        useOutput(name);
+      });
       actions.querySelector('[data-act="rename"]').addEventListener("click", (e) => {
         e.stopPropagation();
         renameOutput(name);
@@ -309,15 +356,15 @@
       previewStrip.innerHTML = "";
       for (const item of previews.slice(0, 6)) {
         if (!item.url) continue;
-        const card = document.createElement("button");
-        card.type = "button";
+        const card = document.createElement("div");
         card.className = "preview-card";
         const label =
           item.label ||
           (item.at_sec != null ? `第 ${item.at_sec} 秒` : item.name || "截帧");
-        card.innerHTML = `<img src="${item.url}" alt="${label}" /><span>${label}</span>`;
+        card.innerHTML = `<button type="button" class="preview-open"><img src="${item.url}" alt="${label}" /><span>${label}</span></button><button type="button" class="preview-delete">删除</button>`;
         card.title = `${label} · ${item.name || ""}`;
-        card.addEventListener("click", () => window.open(item.url, "_blank"));
+        card.querySelector(".preview-open").addEventListener("click", () => window.open(item.url, "_blank"));
+        card.querySelector(".preview-delete").addEventListener("click", () => deletePreview(item.name));
         previewStrip.appendChild(card);
       }
     } else {
