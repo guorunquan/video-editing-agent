@@ -1,6 +1,6 @@
 # 问题与排障记录
 
-记录本项目从 CLI 迷你 Agent 做到 Web v1.0 过程中**真实踩过的坑**、原因与解决办法。
+记录本项目从 CLI 迷你 Agent 做到 Web v1.5 过程中**真实踩过的坑**、原因与解决办法。
 给使用者排障，也给后续接手的 Agent / 开发者避雷。
 
 使用者快速用法见 [USAGE.md](./USAGE.md)；版本能力见 [CHANGELOG.md](./CHANGELOG.md)。
@@ -213,7 +213,19 @@ GEMINI_MODEL=gemini-flash-lite-latest
 
 ---
 
-## 12. 中文字幕方框 / 乱码
+## 12. 视频分析与隐私
+
+输入「这个视频怎么剪」时，视频会通过 Gemini 做画面和音频分析；这不是纯本地处理。分析结果会缓存在 `data/video_analysis/`，该目录已被 git 忽略。
+
+如需本地带时间戳转录：
+
+```powershell
+pip install faster-whisper
+```
+
+然后在 `.env` 设置 `LOCAL_TRANSCRIBE=1`。本地转录失败或未安装时，Gemini 仍会尝试同时理解视频的画面和音频。
+
+## 13. 中文字幕方框 / 乱码
 
 **现象**  
 叠字后中文显示为方框。

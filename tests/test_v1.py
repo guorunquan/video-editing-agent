@@ -2,6 +2,9 @@ import json
 import unittest
 
 from tools import _pending, safe_output_stem, trim_keep
+from video_analysis import _extract_json
+from fastapi import HTTPException
+from web_app import _preview_file
 
 
 class V1SafetyTests(unittest.TestCase):
@@ -28,6 +31,14 @@ class V1SafetyTests(unittest.TestCase):
     def test_invalid_trim_does_not_write(self):
         result = trim_keep(-1, 3)
         self.assertIn("错误", result)
+
+    def test_analysis_json_accepts_code_fence(self):
+        result = _extract_json('```json\n{"summary":"demo","recommendations":[]}\n```')
+        self.assertEqual(result["summary"], "demo")
+
+    def test_preview_path_is_restricted_to_preview_directory(self):
+        with self.assertRaises(HTTPException):
+            _preview_file("..\\secret.mp4")
 
 
 if __name__ == "__main__":

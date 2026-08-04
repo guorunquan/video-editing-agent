@@ -13,7 +13,8 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from tools import TOOL_DECLARATIONS, run_tool
+from tools import TOOL_DECLARATIONS, _resolve_source, run_tool
+from video_analysis import analyze_video
 
 SYSTEM_PROMPT = """
 你是一个亲切、务实的「迷你视频剪辑」助手，只会通过工具处理本地视频。
@@ -48,6 +49,8 @@ SYSTEM_PROMPT = """
     用户已确认「拼接并命名」时：concat confirmed=true 成功后，接着 rename_output(..., confirmed=true)。
 13. 用户要求「切得更准」时给 trim_keep 加 precise=true。
 14. 用户取消待确认计划时，不要执行写操作。
+15. 用户问「怎么剪 / 如何剪 / 给剪辑建议」时，先完成视频分析，再根据带时间点的证据给建议；分析阶段不得自动修改文件。
+16. 用户说「采用方案 N」时，使用上一次分析结果中的时间段生成剪辑计划，仍须 confirmed=false 等待确认。
 """.strip()
 
 
@@ -111,6 +114,16 @@ class VideoAgent:
         self.history.append(
             types.Content(role="user", parts=[types.Part(text=user_text)])
         )
+
+        if self._looks_like_analysis_request(user_text):
+            force = any(key in user_text for key in ("重新分析", "再分析", "刷新分析"))
+            try:
+                video = _resolve_source(None, prefer_latest_output=False)
+                result = analyze_video(self.client, self.model, video, force=force)
+            except Exception as exc:  # noqa: BLE001
+                result = f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}"
+            self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
+            return result
 
         for round_i in range(6):
             print("  ... requesting Gemini")
@@ -198,6 +211,16 @@ class VideoAgent:
             print(f"  ... tool round {round_i + 1} done")
 
         return "工具轮次过多，已停止。"
+
+    @staticmethod
+    def _looks_like_analysis_request(text: str) -> bool:
+        raw = (text or "").strip()
+        if any(key in raw for key in ("重新分析", "再分析", "刷新分析")):
+            return True
+        return any(
+            key in raw
+            for key in ("怎么剪", "如何剪", "剪辑建议", "剪辑方案", "怎么编辑", "适合怎么剪")
+        )
 
 
 def load_settings() -> tuple[str, str]:

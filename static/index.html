@@ -10,25 +10,25 @@
       href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/style.css?v=1.0.0" />
+    <link rel="stylesheet" href="/style.css?v=1.5.0" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true"></div>
     <main class="shell">
       <header class="brand">
         <p class="brand-mark">Mini Video Agent</p>
-        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.0</p>
+        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.5</p>
       </header>
 
       <section class="stage">
         <div class="player-panel">
           <section class="welcome-card">
-            <strong>三步完成一次剪辑</strong>
-            <span>上传视频 → 用中文描述 → 确认后导出</span>
-            <div class="welcome-actions">
-              <button type="button" class="quick-action" data-prompt="去掉前 3 秒">去掉片头 3 秒</button>
-              <button type="button" class="quick-action" data-prompt="加标题：产品演示">加标题</button>
-              <button type="button" class="quick-action" data-prompt="截第 5 秒看看">截帧预览</button>
+            <strong>不知道怎么剪？</strong>
+            <span>把视频交给 AI 分析，它会结合语音、画面和时间点给出剪辑建议。</span>
+            <div class="guide-lines">
+              <span>① 先上传视频或选择已有成片</span>
+              <span>② 点击“AI 教你怎么剪”</span>
+              <span>③ 选择方案，确认后再导出</span>
             </div>
           </section>
           <div class="player-frame">
@@ -72,6 +72,7 @@
             ></textarea>
             <div class="composer-row">
               <div class="chips" id="chips">
+                <button type="button" class="ai-chip" data-prompt="分析一下这个视频，告诉我怎么剪比较好">AI 教你怎么剪</button>
                 <button type="button" data-prompt="这个视频多长？">多长？</button>
                 <button type="button" data-prompt="去掉前 3 秒">去片头</button>
                 <button type="button" data-prompt="截第 1 秒看看">截帧</button>
@@ -102,6 +103,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=1.0.0"></script>
+    <script src="/app.js?v=1.5.0"></script>
   </body>
 </html>
