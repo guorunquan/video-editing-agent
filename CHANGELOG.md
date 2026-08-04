@@ -30,6 +30,11 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 - 健康检查版本更新为 v1.0.0
 - 增加文件名、确认机制、时间参数的最小回归测试
 
+### v1.5 进行中
+
+- 视频理解 MVP：Gemini 画面/音频分析、带时间点的证据化剪辑建议、分析结果缓存
+- 可选 faster-whisper 本地转录配置（`LOCAL_TRANSCRIBE=1`）
+
 ### Added（v0.5 之后、尚未单独打 tag）
 
 - 对话记录：按日期分组的**多会话目录**；约 3 小时无消息自动开新会话；「新对话」保留旧会话

@@ -197,7 +197,7 @@ python web_app.py
 请先阅读：HANDOFF.md、CHANGELOG.md、PROBLEMS.md、USAGE.md，再改代码。
 硬约定：剪辑逻辑只放 tools.py；写盘需 confirmed；Web 只做壳；静态资源改完 bump ?v=；
 文件名用 safe_output_stem，不要用裸 Path.stem；不要做公网多租户 unless 用户明确要求。
-当前版本目标已完成。后续优先进入 v1.5：转写、文本驱动剪辑、自动字幕、竖屏导出；每次改动同步更新 CHANGELOG / USAGE / PROBLEMS。
+当前版本目标已完成。v1.5 已开始加入证据化视频分析；后续继续完善本地转写、文本驱动剪辑、自动字幕、竖屏导出。每次改动同步更新 CHANGELOG / USAGE / PROBLEMS。
 ```
 
 ---
