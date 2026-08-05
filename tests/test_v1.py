@@ -1,7 +1,9 @@
 import json
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from tools import _pending, safe_output_stem, trim_keep
+from tools import _pending, _resolve_source, _srt_timestamp, _watermark_region, safe_output_stem, trim_keep
 from video_analysis import _extract_json
 from fastapi import HTTPException
 from web_app import _preview_file
@@ -39,6 +41,29 @@ class V1SafetyTests(unittest.TestCase):
     def test_preview_path_is_restricted_to_preview_directory(self):
         with self.assertRaises(HTTPException):
             _preview_file("..\\secret.mp4")
+
+    def test_srt_timestamp_format(self):
+        self.assertEqual(_srt_timestamp(65.125), "00:01:05,125")
+
+    def test_watermark_region_uses_bottom_right(self):
+        region = _watermark_region(
+            {"resolution": "1920x1080"}, "bottom_right", None, None, None, None
+        )
+        self.assertIsNotNone(region)
+        x, y, width, height = region
+        self.assertGreater(x, 0)
+        self.assertGreater(y, 0)
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+
+    @patch("tools._list_output_files")
+    @patch("tools._get_working_video")
+    def test_selected_working_video_beats_latest_output(self, get_working, list_outputs):
+        working = Path("selected.mp4")
+        latest = Path("latest.mp4")
+        get_working.return_value = working
+        list_outputs.return_value = [latest]
+        self.assertEqual(_resolve_source(prefer_latest_output=True), working)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,10 @@
   const mediaMeta = document.getElementById("media-meta");
   const previewStrip = document.getElementById("preview-strip");
   const outputList = document.getElementById("output-list");
+  const outputSelectAll = document.getElementById("output-select-all");
+  const previewSelectAll = document.getElementById("preview-select-all");
+  const btnDeleteOutputs = document.getElementById("btn-delete-outputs");
+  const btnDeletePreviews = document.getElementById("btn-delete-previews");
   const outputDirEl = document.getElementById("output-dir");
   const btnRefresh = document.getElementById("btn-refresh");
   const btnReset = document.getElementById("btn-reset");
@@ -249,6 +253,57 @@
     }
   }
 
+  async function deleteMediaBatch(kind, names) {
+    if (!names.length) {
+      addBubble("请先选择要删除的项目。", "system");
+      return;
+    }
+    const label = kind === "outputs" ? "成片" : "截帧";
+    if (!window.confirm(`确定删除选中的 ${names.length} 个${label}吗？`)) return;
+    const endpoint = kind === "outputs" ? "/api/outputs/delete-batch" : "/api/previews/delete-batch";
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addBubble(formatDetail(data.detail) || `删除${label}失败`, "system");
+        return;
+      }
+      addBubble(data.message || `已删除${label}`, "system");
+      if (data.state) {
+        currentPlayUrl = "";
+        applyState(data.state);
+      }
+    } catch (err) {
+      addBubble(friendlyClientError(err), "system");
+    }
+  }
+
+  function syncSelectAll(kind) {
+    const list = kind === "outputs" ? outputList : previewStrip;
+    const master = kind === "outputs" ? outputSelectAll : previewSelectAll;
+    if (!list || !master) return;
+    const boxes = Array.from(list.querySelectorAll("input.media-select"));
+    master.checked = boxes.length > 0 && boxes.every((box) => box.checked);
+    master.indeterminate = boxes.some((box) => box.checked) && !master.checked;
+  }
+
+  function bindMediaSelection(container, checkbox, kind) {
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      checkbox.closest("li, .preview-card")?.classList.toggle("is-selected", checkbox.checked);
+      syncSelectAll(kind);
+    });
+    container.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, input")) return;
+      checkbox.checked = !checkbox.checked;
+      checkbox.dispatchEvent(new Event("change"));
+    });
+  }
+
   function renderOutputs(outputs) {
     if (!outputList) return;
     outputList.innerHTML = "";
@@ -258,6 +313,10 @@
       li.className = "empty-hint";
       li.textContent = "暂无导出成片";
       outputList.appendChild(li);
+      if (outputSelectAll) {
+        outputSelectAll.checked = false;
+        outputSelectAll.indeterminate = false;
+      }
       return;
     }
 
@@ -267,6 +326,13 @@
       const li = document.createElement("li");
       li.dataset.name = name;
       if (name === activeOutputName) li.classList.add("is-active");
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "media-select";
+      checkbox.dataset.name = name;
+      checkbox.title = `选择 ${name}`;
+      bindMediaSelection(li, checkbox, "outputs");
 
       const main = document.createElement("div");
       main.className = "out-main";
@@ -283,6 +349,7 @@
       actions.className = "out-actions";
       actions.innerHTML = `
         <button type="button" class="mini primary-mini" data-act="use">操作此视频</button>
+        <button type="button" class="mini danger-mini" data-act="delete">删除</button>
         <button type="button" class="mini" data-act="rename">改名</button>
         <button type="button" class="mini" data-act="reveal">位置</button>
         <a class="mini mini-link" data-act="download" href="/api/outputs/download/${encodeURIComponent(name)}">下载</a>
@@ -290,6 +357,10 @@
       actions.querySelector('[data-act="use"]').addEventListener("click", (e) => {
         e.stopPropagation();
         useOutput(name);
+      });
+      actions.querySelector('[data-act="delete"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteMediaBatch("outputs", [name]);
       });
       actions.querySelector('[data-act="rename"]').addEventListener("click", (e) => {
         e.stopPropagation();
@@ -300,10 +371,12 @@
         revealOutput(name);
       });
 
+      li.appendChild(checkbox);
       li.appendChild(main);
       li.appendChild(actions);
       outputList.appendChild(li);
     }
+    syncSelectAll("outputs");
   }
 
   function applyState(state, preferUrl) {
@@ -362,14 +435,26 @@
           item.label ||
           (item.at_sec != null ? `第 ${item.at_sec} 秒` : item.name || "截帧");
         card.innerHTML = `<button type="button" class="preview-open"><img src="${item.url}" alt="${label}" /><span>${label}</span></button><button type="button" class="preview-delete">删除</button>`;
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "media-select";
+        checkbox.dataset.name = item.name || "";
+        checkbox.title = `选择 ${label}`;
+        card.prepend(checkbox);
+        bindMediaSelection(card, checkbox, "previews");
         card.title = `${label} · ${item.name || ""}`;
         card.querySelector(".preview-open").addEventListener("click", () => window.open(item.url, "_blank"));
         card.querySelector(".preview-delete").addEventListener("click", () => deletePreview(item.name));
         previewStrip.appendChild(card);
       }
+      syncSelectAll("previews");
     } else {
       previewStrip.hidden = true;
       previewStrip.innerHTML = "";
+      if (previewSelectAll) {
+        previewSelectAll.checked = false;
+        previewSelectAll.indeterminate = false;
+      }
     }
   }
 
@@ -640,6 +725,44 @@
 
   if (btnOpenFolder) {
     btnOpenFolder.addEventListener("click", () => revealOutput(null));
+  }
+
+  if (btnDeleteOutputs) {
+    btnDeleteOutputs.addEventListener("click", () => {
+      const names = Array.from(outputList?.querySelectorAll("input.media-select:checked") || [])
+        .map((el) => el.dataset.name)
+        .filter(Boolean);
+      deleteMediaBatch("outputs", names);
+    });
+  }
+
+  if (btnDeletePreviews) {
+    btnDeletePreviews.addEventListener("click", () => {
+      const names = Array.from(previewStrip?.querySelectorAll("input.media-select:checked") || [])
+        .map((el) => el.dataset.name)
+        .filter(Boolean);
+      deleteMediaBatch("previews", names);
+    });
+  }
+
+  if (outputSelectAll) {
+    outputSelectAll.addEventListener("change", () => {
+      outputList?.querySelectorAll("input.media-select").forEach((el) => {
+        el.checked = outputSelectAll.checked;
+        el.closest("li")?.classList.toggle("is-selected", el.checked);
+      });
+      outputSelectAll.indeterminate = false;
+    });
+  }
+
+  if (previewSelectAll) {
+    previewSelectAll.addEventListener("change", () => {
+      previewStrip?.querySelectorAll("input.media-select").forEach((el) => {
+        el.checked = previewSelectAll.checked;
+        el.closest(".preview-card")?.classList.toggle("is-selected", el.checked);
+      });
+      previewSelectAll.indeterminate = false;
+    });
   }
 
   if (btnHistory) {

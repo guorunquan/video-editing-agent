@@ -1,5 +1,5 @@
 """
-Mini Video Agent Web UI（v1.5）
+Mini Video Agent Web UI（v1.6）
 
 本地体验站：上传 → 对话剪辑 → 确认按钮 / 成片点选 / 多会话记录。
 复用 agent.py / tools.py。
@@ -61,7 +61,7 @@ SESSION_GAP_SEC = 3 * 3600  # 超过 3 小时无消息 → 自动新开会话
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 MEDIA_ROOTS = (UPLOAD_DIR, OUTPUT_DIR, SAMPLES_DIR)
 
-app = FastAPI(title="Mini Video Agent", version="1.5.0")
+app = FastAPI(title="灵剪 EditMate", version="1.6.0")
 
 _agent: VideoAgent | None = None
 _chat_lock = False
@@ -450,6 +450,10 @@ class PreviewDeleteRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
 
 
+class BatchDeleteRequest(BaseModel):
+    names: list[str] = Field(..., min_length=1, max_length=20)
+
+
 class HistorySelectRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=64)
 
@@ -467,7 +471,7 @@ _load_sessions()
 @app.get("/api/health")
 def health() -> dict:
     model = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    return {"ok": True, "version": "1.5.0", "model": model, "web_mode": True}
+    return {"ok": True, "version": "1.6.0", "model": model, "web_mode": True}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -581,6 +585,32 @@ def api_delete_preview(body: PreviewDeleteRequest) -> dict:
     return {
         "ok": True,
         "message": f"已删除截帧：{target.name}",
+        "state": _enrich_state(),
+    }
+
+
+@app.post("/api/outputs/delete-batch")
+def api_delete_outputs_batch(body: BatchDeleteRequest) -> dict:
+    targets = [_output_file(name) for name in body.names]
+    for target in targets:
+        target.unlink()
+    return {
+        "ok": True,
+        "message": f"已删除 {len(targets)} 个成片",
+        "deleted": [target.name for target in targets],
+        "state": _enrich_state(),
+    }
+
+
+@app.post("/api/previews/delete-batch")
+def api_delete_previews_batch(body: BatchDeleteRequest) -> dict:
+    targets = [_preview_file(name) for name in body.names]
+    for target in targets:
+        target.unlink()
+    return {
+        "ok": True,
+        "message": f"已删除 {len(targets)} 张截帧",
+        "deleted": [target.name for target in targets],
         "state": _enrich_state(),
     }
 
@@ -726,7 +756,7 @@ if __name__ == "__main__":
     host = (os.getenv("WEB_HOST") or "127.0.0.1").strip()
     port = int(os.getenv("WEB_PORT") or "7860")
     print("=" * 50)
-    print("Mini Video Agent Web v1.5.0")
+    print("Mini Video Agent Web v1.6.0")
     print(f"open: http://{host}:{port}")
     print("多会话记录 · 成片重命名/打开文件夹 · 截帧秒数")
     print("使用说明见 USAGE.md")
