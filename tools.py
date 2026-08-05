@@ -131,19 +131,19 @@ def _resolve_source(
 ) -> Path:
     """
     解析源视频优先级：
-    显式 path >（可选）最新成片 > 会话工作视频 > 默认样本
+    显式 path > 会话工作视频 >（可选）最新成片 > 默认样本
     """
     if path:
         video = _ensure_video(path)
         _set_working_video(video)
         return video
+    working = _get_working_video()
+    if working is not None:
+        return working
     if prefer_latest_output:
         latest = _list_output_files()
         if latest:
             return latest[0]
-    working = _get_working_video()
-    if working is not None:
-        return working
     return _ensure_video(None)
 
 
@@ -330,17 +330,10 @@ def get_media_state() -> dict:
 
     latest_output = outputs[0] if outputs else None
     latest_preview = previews[0] if previews else None
-    # 上传后 working 更新；导出后 working 也会指向新成片。按较新者预览，避免一直播旧 output。
+    # working_video 是用户明确选择的当前素材，必须优先于“最新成片”。
+    # 上传和导出也会更新 working_video，因此这里不再按 mtime 覆盖用户选择。
     play: Path | None
-    if working and latest_output:
-        if working.resolve() == latest_output.resolve():
-            play = working
-        elif working.stat().st_mtime >= latest_output.stat().st_mtime:
-            play = working
-        else:
-            play = latest_output
-    else:
-        play = working or latest_output
+    play = working or latest_output
     return {
         "working_video": _item(working) if working else None,
         "latest_output": _item(latest_output) if latest_output else None,
