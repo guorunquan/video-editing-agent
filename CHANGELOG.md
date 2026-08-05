@@ -38,7 +38,7 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 - Agent 工具 `rename_output`：对话「命名为拼接」等（`safe_output_stem` 支持 `1.5倍速`）
 - 文档：
   - [PROBLEMS.md](./PROBLEMS.md) — 全程踩坑与排障
-  - [HANDOFF.md](./HANDOFF.md) — 下一任 Agent / 开发者交接（含 v1.0 / v1.5 建议）
+  - [HANDOFF.md](./HANDOFF.md) — 下一任 Agent / 开发者交接（含 v1.5 / v1.6 建议）
   - README / USAGE / LEARNING 交叉链接已同步
 
 ### Fixed
@@ -67,7 +67,28 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 
 ### 下一步
 
-- v1.6：自动字幕、文本驱动剪辑、竖屏导出
+- v1.7：文本驱动剪辑、竖屏导出、移动水印跟踪
+
+## [1.6.0] - 2026-08-05
+
+**主题：** 自动字幕 · 固定位置水印处理
+
+### Added
+
+- `add_auto_subtitles`：本地 faster-whisper 识别语音，生成 SRT 并烧录到视频
+- `remove_watermark`：固定区域水印模糊或遮盖
+- 页面增加「自动字幕」「去水印」快捷入口
+- 自动字幕和水印处理均遵守确认后写盘
+- 增加 SRT 时间戳和水印区域计算测试
+
+### Notes
+
+- `faster-whisper` 为可选依赖，需要单独安装
+- 水印处理第一版只支持固定区域，不保证移动水印无痕恢复
+
+### Product
+
+- 产品名称统一为「灵剪 EditMate」：自然语言描述效果或让系统分析素材，辅助完成整理、粗剪、字幕和简单包装
 
 ---
 

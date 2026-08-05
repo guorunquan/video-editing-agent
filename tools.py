@@ -1110,6 +1110,213 @@ def open_output(name_or_path: str | None = None) -> str:
     )
 
 
+def _srt_timestamp(seconds: float) -> str:
+    total_ms = max(0, int(round(float(seconds) * 1000)))
+    hours, remainder = divmod(total_ms, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _ffmpeg_filter_path(path: Path) -> str:
+    return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+
+
+def _transcribe_local(video: Path) -> tuple[list[dict], str | None, str | None]:
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return [], None, (
+            "未安装 faster-whisper。请在项目虚拟环境执行："
+            ".\\.venv\\Scripts\\python.exe -m pip install faster-whisper"
+        )
+
+    model_name = (os.getenv("WHISPER_MODEL") or "base").strip()
+    device = (os.getenv("WHISPER_DEVICE") or "cpu").strip()
+    compute_type = (os.getenv("WHISPER_COMPUTE_TYPE") or "int8").strip()
+    try:
+        model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        segments, info = model.transcribe(str(video), vad_filter=True)
+        rows = []
+        for segment in segments:
+            text = (segment.text or "").strip()
+            if text:
+                rows.append(
+                    {
+                        "start_sec": round(float(segment.start), 3),
+                        "end_sec": round(float(segment.end), 3),
+                        "text": text,
+                    }
+                )
+        return rows, getattr(info, "language", None), None
+    except Exception as exc:  # noqa: BLE001
+        return [], None, f"Whisper 转录失败：{type(exc).__name__}: {str(exc)[:500]}"
+
+
+def add_auto_subtitles(
+    path: str | None = None,
+    language: str | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Use local faster-whisper to create SRT and burn subtitles into a video."""
+    try:
+        video = _resolve_source(path, prefer_latest_output=True)
+    except FileNotFoundError as e:
+        return str(e)
+
+    meta = _video_meta(video)
+    plan = {
+        "action": "add_auto_subtitles",
+        "input": str(video),
+        "language": language or "auto",
+        "model": os.getenv("WHISPER_MODEL") or "base",
+        "note": "使用本地 faster-whisper 识别语音，生成带时间轴字幕并烧录到视频",
+    }
+    summary = (
+        f"将为「{video.name}」生成自动字幕并烧录到视频。"
+        f"语言：{language or '自动识别'}；预计时长：{meta.get('duration_sec') or '未知'} 秒。"
+    )
+    if not confirmed:
+        return _pending("自动字幕计划", summary, plan, "add_auto_subtitles")
+
+    rows, detected_language, error = _transcribe_local(video)
+    if error:
+        return f"错误：{error}"
+    if not rows:
+        return "错误：没有识别到可用语音，无法生成字幕。"
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    srt = OUTPUT_DIR / f"subtitles_{_stamp()}.srt"
+    srt.write_text(
+        "\n\n".join(
+            f"{index}\n{_srt_timestamp(row['start_sec'])} --> {_srt_timestamp(row['end_sec'])}\n{row['text']}"
+            for index, row in enumerate(rows, 1)
+        )
+        + "\n",
+        encoding="utf-8-sig",
+    )
+    out = OUTPUT_DIR / f"subtitled_{_stamp()}.mp4"
+    vf = (
+        f"subtitles='{_ffmpeg_filter_path(srt)}':"
+        "force_style='FontName=Microsoft YaHei,FontSize=18,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=36'"
+    )
+    proc = _run(
+        [
+            get_ffmpeg(), "-y", "-i", str(video), "-vf", vf,
+            "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(out),
+        ]
+    )
+    if not _encode_ok(out, proc):
+        err = (proc.stderr or "")[-1000:]
+        return f"FFmpeg 字幕烧录失败：\n{err}"
+
+    _set_working_video(out)
+    result = {
+        **plan,
+        "language": language or detected_language or "unknown",
+        "segments": len(rows),
+        "subtitle_file": str(srt.resolve()),
+        "output": str(out.resolve()),
+        "output_mb": round(out.stat().st_size / (1024 * 1024), 2),
+        "status": "ok",
+    }
+    _save_job(result)
+    return "自动字幕已生成并烧录。\n" + json.dumps(result, ensure_ascii=False, indent=2) + _hint(
+        "打开视频检查字幕位置", "如果字幕不准，可以换 WHISPER_MODEL=small 后重新生成"
+    )
+
+
+_WATERMARK_POSITIONS = {"top_left", "top_right", "bottom_left", "bottom_right"}
+
+
+def _watermark_region(meta: dict, position: str, x: float | None, y: float | None, width: float | None, height: float | None) -> tuple[int, int, int, int] | None:
+    match = re.match(r"^(\d+)x(\d+)$", str(meta.get("resolution") or ""))
+    if not match:
+        return None
+    frame_w, frame_h = int(match.group(1)), int(match.group(2))
+    w = max(8, int(width if width is not None else frame_w * 0.18))
+    h = max(8, int(height if height is not None else frame_h * 0.12))
+    if x is None:
+        x_value = 0.05 * frame_w if "left" in position else 0.77 * frame_w
+    else:
+        x_value = x
+    if y is None:
+        y_value = 0.05 * frame_h if "top" in position else 0.83 * frame_h
+    else:
+        y_value = y
+    return max(0, int(x_value)), max(0, int(y_value)), min(w, frame_w), min(h, frame_h)
+
+
+def remove_watermark(
+    path: str | None = None,
+    position: str = "bottom_right",
+    mode: str = "blur",
+    x: float | None = None,
+    y: float | None = None,
+    width: float | None = None,
+    height: float | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Blur or cover a fixed watermark region; does not promise AI inpainting."""
+    try:
+        video = _resolve_source(path, prefer_latest_output=True)
+    except FileNotFoundError as e:
+        return str(e)
+    position = (position or "bottom_right").strip().lower()
+    mode = (mode or "blur").strip().lower()
+    if position not in _WATERMARK_POSITIONS:
+        return f"错误：position 只能是 {', '.join(sorted(_WATERMARK_POSITIONS))}。"
+    if mode not in {"blur", "cover"}:
+        return "错误：mode 只能是 blur（模糊）或 cover（遮盖）。"
+
+    meta = _video_meta(video)
+    region = _watermark_region(meta, position, x, y, width, height)
+    if region is None:
+        return "错误：无法读取视频分辨率，无法计算水印区域。"
+    rx, ry, rw, rh = region
+    plan = {
+        "action": "remove_watermark",
+        "input": str(video),
+        "position": position,
+        "mode": mode,
+        "region": {"x": rx, "y": ry, "width": rw, "height": rh},
+        "note": "固定区域处理：模糊或遮盖，不保证移动水印无痕恢复",
+    }
+    summary = (
+        f"将处理「{video.name}」的{position}固定区域（{rw}x{rh}），"
+        f"方式：{'模糊' if mode == 'blur' else '遮盖'}。"
+    )
+    if not confirmed:
+        return _pending("固定水印处理计划", summary, plan, "remove_watermark")
+
+    if mode == "blur":
+        vf = f"delogo=x={rx}:y={ry}:w={rw}:h={rh}:show=0"
+    else:
+        vf = f"drawbox=x={rx}:y={ry}:w={rw}:h={rh}:color=black@0.88:t=fill"
+    out = OUTPUT_DIR / f"watermark_{mode}_{_stamp()}.mp4"
+    proc = _run(
+        [
+            get_ffmpeg(), "-y", "-i", str(video), "-vf", vf,
+            "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(out),
+        ]
+    )
+    if not _encode_ok(out, proc):
+        err = (proc.stderr or "")[-1000:]
+        return f"FFmpeg 水印处理失败：\n{err}"
+    _set_working_video(out)
+    result = {
+        **plan,
+        "output": str(out.resolve()),
+        "output_mb": round(out.stat().st_size / (1024 * 1024), 2),
+        "status": "ok",
+    }
+    _save_job(result)
+    return "固定水印已处理。\n" + json.dumps(result, ensure_ascii=False, indent=2) + _hint(
+        "打开视频检查效果", "如果水印会移动，请提供大致区域或改用裁剪方案"
+    )
+
+
 def add_text_overlay(
     text: str,
     path: str | None = None,
@@ -1408,6 +1615,44 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "add_auto_subtitles",
+        "description": (
+            "使用本地 faster-whisper 识别视频语音，生成带时间轴的 SRT 并烧录到新视频。"
+            "用户说「自动加字幕」「生成字幕」「给视频配字幕」时使用。"
+            "需要确认；confirmed=false 只展示计划，confirmed=true 才执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "源视频；省略优先最新成片"},
+                "language": {"type": "string", "description": "语言，可填 zh/en；省略自动识别"},
+                "confirmed": {"type": "boolean", "description": "false=预览计划；true=执行"},
+            },
+        },
+    },
+    {
+        "name": "remove_watermark",
+        "description": (
+            "处理固定位置水印，支持 blur 模糊或 cover 黑色遮盖。"
+            "position=top_left/top_right/bottom_left/bottom_right。"
+            "这是固定区域处理，不保证移动水印无痕恢复。"
+            "需要确认；confirmed=false 只展示计划，confirmed=true 才执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "源视频；省略优先最新成片"},
+                "position": {"type": "string", "description": "top_left | top_right | bottom_left | bottom_right"},
+                "mode": {"type": "string", "description": "blur 或 cover，默认 blur"},
+                "x": {"type": "number", "description": "自定义左上角 x 坐标，可选"},
+                "y": {"type": "number", "description": "自定义左上角 y 坐标，可选"},
+                "width": {"type": "number", "description": "自定义区域宽度，可选"},
+                "height": {"type": "number", "description": "自定义区域高度，可选"},
+                "confirmed": {"type": "boolean", "description": "false=预览计划；true=执行"},
+            },
+        },
+    },
+    {
         "name": "open_output",
         "description": (
             "用系统程序打开 output/ 成片或预览图。"
@@ -1521,6 +1766,23 @@ def run_tool(name: str, args: dict) -> str:
             fontcolor=str(args.get("fontcolor") or "white"),
             start_sec=args.get("start_sec"),
             end_sec=args.get("end_sec"),
+            confirmed=bool(args.get("confirmed", False)),
+        )
+    if name == "add_auto_subtitles":
+        return add_auto_subtitles(
+            path=args.get("path"),
+            language=args.get("language"),
+            confirmed=bool(args.get("confirmed", False)),
+        )
+    if name == "remove_watermark":
+        return remove_watermark(
+            path=args.get("path"),
+            position=str(args.get("position") or "bottom_right"),
+            mode=str(args.get("mode") or "blur"),
+            x=args.get("x"),
+            y=args.get("y"),
+            width=args.get("width"),
+            height=args.get("height"),
             confirmed=bool(args.get("confirmed", False)),
         )
     if name == "open_output":

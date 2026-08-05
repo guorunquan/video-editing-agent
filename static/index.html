@@ -3,21 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mini Video Agent</title>
+    <title>灵剪 EditMate</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/style.css?v=1.5.0" />
+    <link rel="stylesheet" href="/style.css?v=1.6.0" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true"></div>
     <main class="shell">
       <header class="brand">
-        <p class="brand-mark">Mini Video Agent</p>
-        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.5</p>
+        <p class="brand-mark">灵剪 <span>EditMate</span></p>
+        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.6</p>
       </header>
 
       <section class="stage">
@@ -49,15 +49,23 @@
           <p id="media-meta" class="media-meta">尚未选择工作视频</p>
           <div class="outputs-block">
             <div class="section-label">
-              成片列表 <span class="hint">点击播放</span>
+              成片列表 <span class="hint">点击播放 · 可批量管理</span>
               <button id="btn-open-folder" class="linkish" type="button">打开文件夹</button>
             </div>
             <p id="output-dir" class="path-line" title="成片目录"></p>
+            <div class="media-toolbar">
+              <label><input id="output-select-all" type="checkbox" /> 全选</label>
+              <button id="btn-delete-outputs" class="mini danger-mini" type="button">删除选中</button>
+            </div>
             <ul id="output-list" class="output-list">
               <li class="empty-hint">暂无导出成片</li>
             </ul>
           </div>
-          <div class="section-label">截帧预览 <span class="hint">下方标注第几秒</span></div>
+          <div class="section-label">截帧预览 <span class="hint">下方标注第几秒 · 可批量删除</span></div>
+          <div class="media-toolbar">
+            <label><input id="preview-select-all" type="checkbox" /> 全选</label>
+            <button id="btn-delete-previews" class="mini danger-mini" type="button">删除选中</button>
+          </div>
           <div id="preview-strip" class="preview-strip" hidden></div>
         </div>
 
@@ -75,6 +83,8 @@
                 <button type="button" class="ai-chip" data-prompt="分析一下这个视频，告诉我怎么剪比较好">AI 教你怎么剪</button>
                 <button type="button" data-prompt="这个视频多长？">多长？</button>
                 <button type="button" data-prompt="去掉前 3 秒">去片头</button>
+                <button type="button" data-prompt="给这个视频自动加字幕">自动字幕</button>
+                <button type="button" data-prompt="去掉右下角水印">去水印</button>
                 <button type="button" data-prompt="截第 1 秒看看">截帧</button>
                 <button type="button" id="btn-retry" data-retry="1">重试上一条</button>
               </div>
@@ -103,6 +113,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=1.5.0"></script>
+    <script src="/app.js?v=1.6.0"></script>
   </body>
 </html>

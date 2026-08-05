@@ -1,6 +1,6 @@
 # Agent / 开发者交接文档
 
-面向：**下一个接手本仓库的 AI Agent 或人类开发者**（当前为 v1.5，准备做 v1.6）。
+面向：**下一个接手本仓库的 AI Agent 或人类开发者**（当前为 v1.6，准备做 v1.7）。
 读完应能在不翻完整聊天记录的情况下，安全地改代码、发版本、排障。
 
 | 先读 | 用途 |
@@ -18,7 +18,7 @@
 
 ## 1. 项目是什么（一句话）
 
-**中文对话驱动的本地视频剪辑迷你 Agent**：Gemini Function Calling 选工具 → Python/`tools.py` 调 FFmpeg 写 `output/` → CLI 或本地 Web 预览。  
+**灵剪 EditMate：中文对话驱动的本地视频创作助手**：Gemini Function Calling 选工具 → Python/`tools.py` 调 FFmpeg 写 `output/` → CLI 或本地 Web 预览。
 学习 / 作品集向，**不是** SaaS、不是多轨时间线剪辑器。
 
 参考灵感：[OpenChatCut](https://github.com/0xsline/OpenChatCut)，但刻意保持可维护的小体量。
@@ -27,7 +27,7 @@
 
 ## 2. 当前版本事实（接手时请先核对 CHANGELOG）
 
-截至当前，主线能力已完成 **v1.5 视频理解 MVP**（以 `CHANGELOG.md` 的最新节为准）：
+截至当前，主线能力已完成 **v1.6 自动字幕与固定水印 MVP**（以 `CHANGELOG.md` 的最新节为准）：
 
 **已有剪辑工具（`tools.py`）**
 
@@ -51,6 +51,8 @@
 - `WEB_MODE=1` 时不弹系统播放器  
 - 首页使用指南与「AI 教你怎么剪」快捷入口
 - 成片直接设为当前工作视频；截帧预览可删除
+- 自动字幕工具依赖可选的本地 `faster-whisper`
+- 固定水印支持 `blur` / `cover`，不承诺移动水印无痕修复
 - 结构化待确认计划、任务状态接口 `/api/jobs/{job_id}`、成片下载
 - `tests/test_v1.py` 覆盖文件名、确认机制、路径与时间参数基础回归
 
@@ -198,7 +200,7 @@ python web_app.py
 请先阅读：HANDOFF.md、CHANGELOG.md、PROBLEMS.md、USAGE.md，再改代码。
 硬约定：剪辑逻辑只放 tools.py；写盘需 confirmed；Web 只做壳；静态资源改完 bump ?v=；
 文件名用 safe_output_stem，不要用裸 Path.stem；不要做公网多租户 unless 用户明确要求。
-当前版本目标已完成。后续优先完善本地转写、文本驱动剪辑、自动字幕、竖屏导出。每次改动同步更新 CHANGELOG / USAGE / PROBLEMS。
+当前版本目标已完成。后续优先完善文本驱动剪辑、竖屏导出、移动水印跟踪。每次改动同步更新 CHANGELOG / USAGE / PROBLEMS。
 ```
 
 ---

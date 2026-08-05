@@ -100,6 +100,11 @@ body {
   gap: 12px;
 }
 
+.brand-mark span {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .welcome-card {
   display: flex;
   flex-direction: column;
@@ -337,6 +342,29 @@ body {
   border-color: rgba(15, 122, 108, 0.45);
 }
 
+.media-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.media-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.media-select {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.output-list li > .media-select {
+  align-self: flex-start;
+}
+
 .out-actions .mini-link {
   text-decoration: none;
   display: inline-flex;
@@ -346,6 +374,10 @@ body {
 .out-actions .primary-mini {
   color: var(--accent);
   font-weight: 700;
+}
+
+.danger-mini {
+  color: #a84b4b !important;
 }
 
 .output-list li.empty-hint {
@@ -374,6 +406,10 @@ body {
   color: var(--muted);
   font: inherit;
   font-size: 0.78rem;
+}
+
+.preview-card > .media-select {
+  align-self: center;
 }
 
 .preview-open {
