@@ -13,6 +13,8 @@
 
 | 文档 | 给谁看 |
 |------|--------|
+| **[总体目标](./docs/PRODUCT_GOALS.md)** | **产品方向**：项目定位、目标用户、成功标准与能力边界 |
+| **[需求分析](./docs/REQUIREMENTS_ANALYSIS.md)** | **产品迭代**：需求优先级、验收标准、版本路线与风险 |
 | **[USAGE.md](./USAGE.md)** | **使用者**：安装、开网页、说法、FAQ |
 | **[PROBLEMS.md](./PROBLEMS.md)** | 排障：项目过程中踩过的坑与解法 |
 | **[HANDOFF.md](./HANDOFF.md)** | **下一个 Agent / 开发者**：架构、约定、v1.6 方向 |
