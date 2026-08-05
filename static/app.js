@@ -282,6 +282,28 @@
     }
   }
 
+  function syncSelectAll(kind) {
+    const list = kind === "outputs" ? outputList : previewStrip;
+    const master = kind === "outputs" ? outputSelectAll : previewSelectAll;
+    if (!list || !master) return;
+    const boxes = Array.from(list.querySelectorAll("input.media-select"));
+    master.checked = boxes.length > 0 && boxes.every((box) => box.checked);
+    master.indeterminate = boxes.some((box) => box.checked) && !master.checked;
+  }
+
+  function bindMediaSelection(container, checkbox, kind) {
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      checkbox.closest("li, .preview-card")?.classList.toggle("is-selected", checkbox.checked);
+      syncSelectAll(kind);
+    });
+    container.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, input")) return;
+      checkbox.checked = !checkbox.checked;
+      checkbox.dispatchEvent(new Event("change"));
+    });
+  }
+
   function renderOutputs(outputs) {
     if (!outputList) return;
     outputList.innerHTML = "";
@@ -291,6 +313,10 @@
       li.className = "empty-hint";
       li.textContent = "暂无导出成片";
       outputList.appendChild(li);
+      if (outputSelectAll) {
+        outputSelectAll.checked = false;
+        outputSelectAll.indeterminate = false;
+      }
       return;
     }
 
@@ -306,6 +332,7 @@
       checkbox.className = "media-select";
       checkbox.dataset.name = name;
       checkbox.title = `选择 ${name}`;
+      bindMediaSelection(li, checkbox, "outputs");
 
       const main = document.createElement("div");
       main.className = "out-main";
@@ -349,6 +376,7 @@
       li.appendChild(actions);
       outputList.appendChild(li);
     }
+    syncSelectAll("outputs");
   }
 
   function applyState(state, preferUrl) {
@@ -413,14 +441,20 @@
         checkbox.dataset.name = item.name || "";
         checkbox.title = `选择 ${label}`;
         card.prepend(checkbox);
+        bindMediaSelection(card, checkbox, "previews");
         card.title = `${label} · ${item.name || ""}`;
         card.querySelector(".preview-open").addEventListener("click", () => window.open(item.url, "_blank"));
         card.querySelector(".preview-delete").addEventListener("click", () => deletePreview(item.name));
         previewStrip.appendChild(card);
       }
+      syncSelectAll("previews");
     } else {
       previewStrip.hidden = true;
       previewStrip.innerHTML = "";
+      if (previewSelectAll) {
+        previewSelectAll.checked = false;
+        previewSelectAll.indeterminate = false;
+      }
     }
   }
 
@@ -715,7 +749,9 @@
     outputSelectAll.addEventListener("change", () => {
       outputList?.querySelectorAll("input.media-select").forEach((el) => {
         el.checked = outputSelectAll.checked;
+        el.closest("li")?.classList.toggle("is-selected", el.checked);
       });
+      outputSelectAll.indeterminate = false;
     });
   }
 
@@ -723,7 +759,9 @@
     previewSelectAll.addEventListener("change", () => {
       previewStrip?.querySelectorAll("input.media-select").forEach((el) => {
         el.checked = previewSelectAll.checked;
+        el.closest(".preview-card")?.classList.toggle("is-selected", el.checked);
       });
+      previewSelectAll.indeterminate = false;
     });
   }
 
