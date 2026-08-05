@@ -1,10 +1,12 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from tools import _pending, _resolve_source, _srt_timestamp, _watermark_region, safe_output_stem, trim_keep
-from video_analysis import _extract_json
+from video_analysis import _extract_json, _prepare_ascii_upload
+from tools import _replace_subtitle_pairs
 from fastapi import HTTPException
 from web_app import _preview_file
 
@@ -37,6 +39,31 @@ class V1SafetyTests(unittest.TestCase):
     def test_analysis_json_accepts_code_fence(self):
         result = _extract_json('```json\n{"summary":"demo","recommendations":[]}\n```')
         self.assertEqual(result["summary"], "demo")
+
+    def test_non_ascii_video_path_uses_temporary_ascii_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "中文视频.mp4"
+            source.write_bytes(b"test")
+            staged, cleanup = _prepare_ascii_upload(source)
+            try:
+                self.assertNotEqual(staged, source)
+                self.assertTrue(staged.exists())
+                staged.as_posix().encode("ascii")
+            finally:
+                if cleanup:
+                    cleanup.unlink(missing_ok=True)
+
+    def test_subtitle_replacement_merges_split_phrase(self):
+        blocks = [
+            "1\n00:00:01,000 --> 00:00:02,000\n怎么做回甲乙",
+            "2\n00:00:02,000 --> 00:00:03,000\n丙丁",
+        ]
+        rewritten, changed = _replace_subtitle_pairs(
+            blocks, [("怎么做回甲乙丙丁", "完成")]
+        )
+        self.assertEqual(changed, 1)
+        self.assertEqual(len(rewritten), 1)
+        self.assertIn("完成", rewritten[0])
 
     def test_preview_path_is_restricted_to_preview_directory(self):
         with self.assertRaises(HTTPException):

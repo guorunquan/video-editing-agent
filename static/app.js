@@ -427,7 +427,7 @@
     if (previews.length) {
       previewStrip.hidden = false;
       previewStrip.innerHTML = "";
-      for (const item of previews.slice(0, 6)) {
+      for (const item of previews) {
         if (!item.url) continue;
         const card = document.createElement("div");
         card.className = "preview-card";
