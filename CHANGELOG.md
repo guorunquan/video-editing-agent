@@ -19,6 +19,21 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 
 ---
 
+## [1.7.0] - 2026-08-05
+
+### Fixed
+- 自动字幕统一转换为简体中文，并增加 OpenCC 依赖。
+- 新增 `edit_subtitles`，支持单条或批量替换 SRT 字幕；修改已有字幕时从原视频重新烧录，避免重复叠加。
+- 分屏字幕支持跨连续 SRT 片段整句匹配，避免只替换第一块字幕。
+- Agent 工具编排轮次从 6 轮提高到 12 轮，复杂批量请求不再过早停止。
+- 截帧预览不再限制显示前 6 张，改为多行滚动展示全部图片。
+- 更新 Web 启动提示与静态资源版本号。
+
+### Documentation
+- README、USAGE、HANDOFF 与 PROBLEMS 同步到 v1.7，补充字幕问题的原因和解决方式。
+
+---
+
 ## [1.0.0] - 2026-08-04
 
 ### Added（v1.0）

@@ -7,9 +7,11 @@ can later turn into confirmed editing operations.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,29 @@ def _save_cache(data: dict[str, Any]) -> None:
 def _cache_key(video: Path) -> str:
     stat = video.stat()
     return f"{video.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
+
+
+def _prepare_ascii_upload(video: Path) -> tuple[Path, Path | None]:
+    """Create an ASCII-named staging copy when Windows upload encoding needs it."""
+    try:
+        str(video).encode("ascii")
+        return video, None
+    except UnicodeEncodeError:
+        digest = hashlib.sha256(_cache_key(video).encode("utf-8")).hexdigest()[:12]
+        suffix = video.suffix.lower() or ".mp4"
+        staged = ANALYSIS_DIR / f"gemini_upload_{digest}{suffix}"
+        ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(video, staged)
+        return staged, staged
+
+
+def _cleanup_staged_upload(staged: Path | None) -> None:
+    if staged is None:
+        return
+    try:
+        staged.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _file_state(file_obj: Any) -> str:
@@ -200,9 +225,10 @@ def analyze_video(client: Any, model: str, video: Path, *, force: bool = False) 
         return _format_result(cached["analysis"], video, cached.get("transcript") or {})
 
     meta = _video_meta(video)
-    transcript = _local_transcript(video)
+    upload_video, staged_upload = _prepare_ascii_upload(video)
     try:
-        uploaded = client.files.upload(file=str(video))
+        transcript = _local_transcript(upload_video)
+        uploaded = client.files.upload(file=str(upload_video))
         deadline = time.time() + float(os.getenv("VIDEO_ANALYSIS_TIMEOUT_SEC") or "180")
         while _file_state(uploaded) in {"PROCESSING", "STATE_UNSPECIFIED", ""}:
             if time.time() >= deadline:
@@ -220,6 +246,9 @@ def analyze_video(client: Any, model: str, video: Path, *, force: bool = False) 
         result = _extract_json(getattr(response, "text", "") or "")
     except Exception as exc:  # noqa: BLE001
         return f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}"
+
+    finally:
+        _cleanup_staged_upload(staged_upload)
 
     cache[key] = {"video": str(video), "analysis": result, "transcript": transcript, "created_at": time.time()}
     _save_cache(cache)

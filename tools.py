@@ -1115,7 +1115,19 @@ def _ffmpeg_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
-def _transcribe_local(video: Path) -> tuple[list[dict], str | None, str | None]:
+def _simplify_chinese(text: str) -> str:
+    """Convert Traditional Chinese transcript text to Simplified Chinese."""
+    try:
+        from opencc import OpenCC
+
+        return OpenCC("t2s").convert(text)
+    except ImportError:
+        # Keep the feature usable before the optional OpenCC package is installed.
+        fallback = str.maketrans("這個視頻內容結尾怎麼說話為與現場時間", "这个视频内容结尾怎么说话为与现场时间")
+        return text.translate(fallback)
+
+
+def _transcribe_local(video: Path, language: str | None = None) -> tuple[list[dict], str | None, str | None]:
     try:
         from faster_whisper import WhisperModel
     except ImportError:
@@ -1129,7 +1141,11 @@ def _transcribe_local(video: Path) -> tuple[list[dict], str | None, str | None]:
     compute_type = (os.getenv("WHISPER_COMPUTE_TYPE") or "int8").strip()
     try:
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
-        segments, info = model.transcribe(str(video), vad_filter=True)
+        requested_language = (language or "").strip().lower()
+        kwargs = {"vad_filter": True}
+        if requested_language and requested_language not in {"auto", "automatic"}:
+            kwargs["language"] = requested_language
+        segments, info = model.transcribe(str(video), **kwargs)
         rows = []
         for segment in segments:
             text = (segment.text or "").strip()
@@ -1138,7 +1154,7 @@ def _transcribe_local(video: Path) -> tuple[list[dict], str | None, str | None]:
                     {
                         "start_sec": round(float(segment.start), 3),
                         "end_sec": round(float(segment.end), 3),
-                        "text": text,
+                        "text": _simplify_chinese(text),
                     }
                 )
         return rows, getattr(info, "language", None), None
@@ -1172,7 +1188,7 @@ def add_auto_subtitles(
     if not confirmed:
         return _pending("自动字幕计划", summary, plan, "add_auto_subtitles")
 
-    rows, detected_language, error = _transcribe_local(video)
+    rows, detected_language, error = _transcribe_local(video, language)
     if error:
         return f"错误：{error}"
     if not rows:
@@ -1218,6 +1234,187 @@ def add_auto_subtitles(
     return "自动字幕已生成并烧录。\n" + json.dumps(result, ensure_ascii=False, indent=2) + _hint(
         "打开视频检查字幕位置", "如果字幕不准，可以换 WHISPER_MODEL=small 后重新生成"
     )
+
+
+def _srt_to_seconds(value: str) -> float:
+    h, m, rest = value.split(":")
+    s, ms = rest.split(",")
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+
+def _latest_subtitle_job() -> tuple[Path, Path] | None:
+    try:
+        job = json.loads(JOB_FILE.read_text(encoding="utf-8"))
+        subtitle = Path(str(job.get("subtitle_file") or "")).resolve()
+        source = Path(str(job.get("input") or "")).resolve()
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if subtitle.is_file() and source.is_file():
+        return subtitle, source
+    return None
+
+
+def _subtitle_match_key(text: str) -> str:
+    """Normalize subtitle text for matching without changing displayed text."""
+    return re.sub(r"[\s，。！？、,.!?;；:：\"“”'‘’]+", "", text or "")
+
+
+def _replace_subtitle_pairs(blocks: list[str], pairs: list[tuple[str, str]]) -> tuple[list[str], int]:
+    """Replace complete phrases, including phrases split across adjacent SRT blocks."""
+    entries = []
+    for block in blocks:
+        lines = block.splitlines()
+        match = re.search(
+            r"(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})",
+            lines[1] if len(lines) > 1 else "",
+        )
+        if match:
+            entries.append({"lines": lines, "start": _srt_to_seconds(match.group(1)), "end": _srt_to_seconds(match.group(2))})
+        else:
+            entries.append({"lines": lines, "start": None, "end": None})
+
+    removed: set[int] = set()
+    changed = 0
+    for old, new in pairs:
+        target = _subtitle_match_key(old)
+        if not target:
+            continue
+        for start in range(len(entries)):
+            if start in removed or entries[start]["start"] is None:
+                continue
+            combined = ""
+            matched = False
+            for end in range(start, min(len(entries), start + 6)):
+                if end in removed or entries[end]["start"] is None:
+                    break
+                combined += _subtitle_match_key("".join(entries[end]["lines"][2:]))
+                if combined == target:
+                    first = entries[start]
+                    last = entries[end]
+                    first["lines"][2:] = [new]
+                    first["lines"][1] = re.sub(
+                        r"-->\s+\d{2}:\d{2}:\d{2},\d{3}",
+                        f"--> {_srt_timestamp(last['end'])}",
+                        first["lines"][1],
+                    )
+                    removed.update(range(start + 1, end + 1))
+                    changed += 1
+                    matched = True
+                    break
+                if len(combined) > len(target):
+                    break
+            if matched:
+                break
+    output = ["\n".join(entry["lines"]) for i, entry in enumerate(entries) if i not in removed]
+    return output, changed
+
+
+def edit_subtitles(
+    old_text: str | None = None,
+    new_text: str = "",
+    replacements: list[dict] | None = None,
+    srt_path: str | None = None,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Edit SRT text and re-burn from the original source video."""
+    target = Path(srt_path).expanduser().resolve() if srt_path else None
+    latest = _latest_subtitle_job()
+    source = latest[1] if latest else _get_working_video()
+    if target is None and latest:
+        target = latest[0]
+    if target is None or not target.is_file():
+        return "错误：还没有可修改的自动字幕，请先生成字幕。"
+    if source is None or not source.is_file():
+        return "错误：找不到生成字幕时使用的原视频，无法重新烧录。"
+    pairs = []
+    for item in replacements or []:
+        if isinstance(item, dict):
+            old = str(item.get("old_text") or item.get("old") or "").strip()
+            new = _simplify_chinese(str(item.get("new_text") or item.get("new") or "").strip())
+            if old and new:
+                pairs.append((old, new))
+    if not pairs and old_text and new_text:
+        pairs = [(old_text.strip(), _simplify_chinese(new_text.strip()))]
+    new_value = _simplify_chinese((new_text or "").strip())
+    if not new_value:
+        return "错误：请提供修改后的字幕内容。"
+
+    plan = {
+        "action": "edit_subtitles", "input": str(source), "subtitle_file": str(target),
+        "old_text": old_text, "new_text": new_value, "replacements": pairs,
+        "start_sec": start_sec, "end_sec": end_sec,
+        "note": "修改 SRT 后从原视频重新烧录，避免重复叠加旧字幕",
+    }
+    scope = f"{len(pairs)} 组字幕" if pairs else (f"包含“{old_text}”的字幕" if old_text else "最后一条字幕")
+    if start_sec is not None:
+        scope = f"{start_sec}s 到 {end_sec if end_sec is not None else '结尾'} 的字幕"
+    summary = f"将把{scope}改为“{new_value}”并重新导出视频。"
+    if not confirmed:
+        return _pending("修改字幕计划", summary, plan, "edit_subtitles")
+
+    try:
+        raw = target.read_text(encoding="utf-8-sig")
+        blocks = raw.strip().split("\n\n")
+        rewritten = []
+        changed = 0
+        for block in blocks:
+            lines = block.splitlines()
+            match = re.search(
+                r"(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})",
+                lines[1] if len(lines) > 1 else "",
+            )
+            if not match:
+                rewritten.append(block)
+                continue
+            entry_start = _srt_to_seconds(match.group(1))
+            entry_end = _srt_to_seconds(match.group(2))
+            selected = False
+            replacement_value = new_value
+            subtitle_lines = "\n".join(lines[2:])
+            for old, new in pairs:
+                if _subtitle_match_key(old) == _subtitle_match_key(subtitle_lines):
+                    selected = True
+                    replacement_value = subtitle_lines.replace(old, new)
+                    break
+            if start_sec is not None:
+                selected = entry_start < float(end_sec) if end_sec is not None else entry_end >= float(start_sec)
+                if end_sec is not None:
+                    selected = selected and entry_end > float(start_sec)
+            if selected:
+                lines[2:] = [replacement_value]
+                changed += 1
+            rewritten.append("\n".join(lines))
+        if pairs and changed == 0:
+            rewritten, changed = _replace_subtitle_pairs(blocks, pairs)
+        if not pairs and not old_text and start_sec is None and rewritten:
+            lines = rewritten[-1].splitlines()
+            if len(lines) >= 3 and lines[2:] != [new_value]:
+                lines[2:] = [new_value]
+                rewritten[-1] = "\n".join(lines)
+                changed += 1
+        if not changed:
+            return "错误：没有找到符合条件的字幕，未生成新视频。"
+    except (OSError, IndexError, ValueError) as exc:
+        return f"错误：读取字幕失败：{type(exc).__name__}: {str(exc)[:300]}"
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    edited_srt = OUTPUT_DIR / f"subtitles_edited_{_stamp()}.srt"
+    edited_srt.write_text("\n\n".join(rewritten) + "\n", encoding="utf-8-sig")
+    out = OUTPUT_DIR / f"subtitled_edited_{_stamp()}.mp4"
+    vf = (
+        f"subtitles='{_ffmpeg_filter_path(edited_srt)}':"
+        "force_style='FontName=Microsoft YaHei,FontSize=18,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=36'"
+    )
+    proc = _run([get_ffmpeg(), "-y", "-i", str(source), "-vf", vf, "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(out)])
+    if not _encode_ok(out, proc):
+        return f"FFmpeg 字幕重新烧录失败：\n{(proc.stderr or '')[-1000:]}"
+    _set_working_video(out)
+    result = {**plan, "subtitle_file": str(edited_srt.resolve()), "output": str(out.resolve()), "changed_segments": changed, "status": "ok"}
+    _save_job(result)
+    return "字幕内容已实际修改并重新烧录。\n" + json.dumps(result, ensure_ascii=False, indent=2)
 
 
 _WATERMARK_POSITIONS = {"top_left", "top_right", "bottom_left", "bottom_right"}
@@ -1624,6 +1821,38 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "edit_subtitles",
+        "description": (
+            "修改已经生成的自动字幕并重新烧录到视频。必须实际读取 SRT、修改匹配字幕，"
+            "再从原视频重新编码；不能只回复已完成。用户说修改字幕、改字幕内容、把某句字幕改成新文字时使用。"
+            "confirmed=false 先展示计划，confirmed=true 才执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "old_text": {"type": "string", "description": "要替换的原字幕，可选；不填且无时间段时修改最后一条字幕"},
+                "new_text": {"type": "string", "description": "新的字幕文字，必须提供"},
+                "srt_path": {"type": "string", "description": "字幕文件路径，可省略，默认使用最近一次自动字幕"},
+                "start_sec": {"type": "number", "description": "要修改的字幕起始时间，可选"},
+                "end_sec": {"type": "number", "description": "要修改的字幕结束时间，可选"},
+                "confirmed": {"type": "boolean", "description": "false=预览计划；true=实际修改并重新导出"},
+                "replacements": {
+                "type": "array",
+                "description": "批量替换列表；每项包含 old_text 和 new_text。修改多句字幕时优先使用此参数",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_text": {"type": "string"},
+                        "new_text": {"type": "string"},
+                    },
+                    "required": ["old_text", "new_text"],
+                },
+            },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "remove_watermark",
         "description": (
             "处理固定位置水印，支持 blur 模糊或 cover 黑色遮盖。"
@@ -1765,6 +1994,16 @@ def run_tool(name: str, args: dict) -> str:
         return add_auto_subtitles(
             path=args.get("path"),
             language=args.get("language"),
+            confirmed=bool(args.get("confirmed", False)),
+        )
+    if name == "edit_subtitles":
+        return edit_subtitles(
+            old_text=args.get("old_text"),
+            new_text=str(args.get("new_text") or ""),
+            replacements=args.get("replacements"),
+            srt_path=args.get("srt_path"),
+            start_sec=args.get("start_sec"),
+            end_sec=args.get("end_sec"),
             confirmed=bool(args.get("confirmed", False)),
         )
     if name == "remove_watermark":

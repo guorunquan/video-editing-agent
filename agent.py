@@ -59,6 +59,17 @@ SYSTEM_PROMPT = """
 """.strip()
 
 
+SYSTEM_PROMPT += """
+
+字幕规则补充：
+- 自动字幕默认输出简体中文；工具返回 status=ok 且明确给出 output 路径后，才能说已完成。
+- 用户要求修改已有字幕内容时，必须调用 edit_subtitles。先 confirmed=false 展示修改计划，用户确认后再 confirmed=true。
+- 用户一次要求修改多句字幕时，必须把每组原文和新文放进 edit_subtitles.replacements 数组；不要只修改最后一句。
+- 修改已有字幕绝对不能调用 add_text_overlay；add_text_overlay 只用于新增标题、贴纸或全新的单行字幕，否则会造成文字重叠。
+- edit_subtitles 会实际读取 SRT、修改匹配的字幕并从原视频重新烧录；如果工具返回错误或没有 output，绝不能声称已经生成或烧录。
+"""
+
+
 def _build_tools() -> list[types.Tool]:
     decls = [
         types.FunctionDeclaration(
@@ -130,7 +141,8 @@ class VideoAgent:
             self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
             return result
 
-        for round_i in range(6):
+        # 复杂的批量字幕/剪辑请求可能包含多个工具调用，给模型足够的编排轮次。
+        for round_i in range(12):
             print("  ... requesting Gemini")
             t0 = time.time()
             try:
