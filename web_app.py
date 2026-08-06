@@ -1,5 +1,5 @@
 """
-Mini Video Agent Web UI（v1.6）
+Mini Video Agent Web UI（v1.8）
 
 本地体验站：上传 → 对话剪辑 → 确认按钮 / 成片点选 / 多会话记录。
 复用 agent.py / tools.py。
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import platform
 import re
@@ -31,7 +32,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent import VideoAgent, load_settings
-from tools import ROOT, get_media_state, safe_output_stem, set_working_video
+from tools import (
+    ROOT,
+    _encode_ok,
+    _run,
+    _video_meta,
+    get_ffmpeg,
+    get_media_state,
+    safe_output_stem,
+    set_working_video,
+)
 
 load_dotenv()
 os.environ.setdefault("WEB_MODE", "1")
@@ -61,7 +71,7 @@ SESSION_GAP_SEC = 3 * 3600  # 超过 3 小时无消息 → 自动新开会话
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 MEDIA_ROOTS = (UPLOAD_DIR, OUTPUT_DIR, SAMPLES_DIR)
 
-app = FastAPI(title="灵剪 EditMate", version="1.6.0")
+app = FastAPI(title="灵剪 EditMate", version="1.8.0")
 
 _agent: VideoAgent | None = None
 _chat_lock = False
@@ -450,6 +460,11 @@ class PreviewDeleteRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
 
 
+class FrameCaptureRequest(BaseModel):
+    at_sec: float = Field(..., ge=0, le=24 * 60 * 60)
+    path: str | None = Field(default=None, max_length=1000)
+
+
 class BatchDeleteRequest(BaseModel):
     names: list[str] = Field(..., min_length=1, max_length=20)
 
@@ -471,7 +486,7 @@ _load_sessions()
 @app.get("/api/health")
 def health() -> dict:
     model = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    return {"ok": True, "version": "1.6.0", "model": model, "web_mode": True}
+    return {"ok": True, "version": "1.8.0", "model": model, "web_mode": True}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -655,6 +670,62 @@ async def api_upload(file: UploadFile = File(...)) -> dict:
     }
 
 
+@app.post("/api/previews/capture")
+def api_capture_frame(body: FrameCaptureRequest) -> dict:
+    """Capture the current timeline position and keep it in output/previews."""
+    if not math.isfinite(body.at_sec):
+        raise HTTPException(status_code=400, detail="at_sec must be a finite number")
+
+    source_path: Path | None = None
+    if body.path:
+        source_path = _path_under_allowed(Path(body.path))
+    else:
+        media_state = get_media_state()
+        working = media_state.get("working_video") or media_state.get("latest_output")
+        if working and working.get("path"):
+            source_path = _path_under_allowed(Path(working["path"]))
+    if source_path is None:
+        raise HTTPException(status_code=404, detail="No working video is available")
+    if source_path.suffix.lower() not in ALLOWED_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Unsupported video format")
+
+    timestamp = float(body.at_sec)
+    metadata = _video_meta(source_path)
+    duration = metadata.get("duration_sec")
+    if duration is not None:
+        if duration <= 0:
+            raise HTTPException(status_code=400, detail="The video has no readable duration")
+        timestamp = min(timestamp, max(0.0, float(duration) - 0.05))
+
+    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    output = PREVIEW_DIR / f"preview_{timestamp:.3f}s_{uuid.uuid4().hex[:8]}.png"
+    proc = _run([
+        get_ffmpeg(),
+        "-y",
+        "-ss",
+        f"{timestamp:.3f}",
+        "-i",
+        str(source_path),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(output),
+    ])
+    if not _encode_ok(output, proc):
+        detail = (proc.stderr or proc.stdout or "")[-1000:]
+        raise HTTPException(status_code=500, detail=f"Frame capture failed: {detail}")
+
+    state = _enrich_state()
+    capture = next((item for item in state["previews"] if item["name"] == output.name), None)
+    return {
+        "ok": True,
+        "message": f"Captured frame at {timestamp:.3f}s",
+        "capture": capture,
+        "state": state,
+    }
+
+
 @app.post("/api/chat")
 def api_chat(body: ChatRequest) -> dict:
     global _chat_lock
@@ -756,7 +827,7 @@ if __name__ == "__main__":
     host = (os.getenv("WEB_HOST") or "127.0.0.1").strip()
     port = int(os.getenv("WEB_PORT") or "7860")
     print("=" * 50)
-    print("灵剪 EditMate Web v1.7.0")
+    print("灵剪 EditMate Web v1.8.0")
     print(f"open: http://{host}:{port}")
     print("AI 视频理解 · 自动剪辑建议 · 字幕生成/批改 · 水印处理 · 成片管理")
     print("使用说明：USAGE.md | 支持直接上传视频或操作当前成片")

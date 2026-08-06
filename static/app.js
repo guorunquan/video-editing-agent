@@ -6,6 +6,21 @@
   const fileInput = document.getElementById("file-input");
   const player = document.getElementById("player");
   const playerEmpty = document.getElementById("player-empty");
+  const currentTimeEl = document.getElementById("current-time");
+  const durationTimeEl = document.getElementById("duration-time");
+  const timelineRange = document.getElementById("timeline-range");
+  const playPauseBtn = document.getElementById("btn-play-pause");
+  const stepBackBtn = document.getElementById("btn-step-back");
+  const stepForwardBtn = document.getElementById("btn-step-forward");
+  const frameBackBtn = document.getElementById("btn-frame-back");
+  const frameForwardBtn = document.getElementById("btn-frame-forward");
+  const timeInput = document.getElementById("time-input");
+  const seekBtn = document.getElementById("btn-seek");
+  const setInBtn = document.getElementById("btn-set-in");
+  const setOutBtn = document.getElementById("btn-set-out");
+  const clearRangeBtn = document.getElementById("btn-clear-range");
+  const captureFrameBtn = document.getElementById("btn-capture-frame");
+  const timelineStatus = document.getElementById("timeline-status");
   const mediaMeta = document.getElementById("media-meta");
   const previewStrip = document.getElementById("preview-strip");
   const outputList = document.getElementById("output-list");
@@ -22,6 +37,9 @@
   const historyModal = document.getElementById("history-modal");
   const historyList = document.getElementById("history-list");
   const sessionNav = document.getElementById("session-nav");
+  const mediaModal = document.getElementById("media-modal");
+  const btnOpenOutputs = document.getElementById("btn-open-outputs");
+  const btnOpenPreviews = document.getElementById("btn-open-previews");
 
   let busy = false;
   let currentPlayUrl = "";
@@ -29,6 +47,10 @@
   let activeOutputName = "";
   let latestHistory = null;
   let viewingSessionId = "";
+  let durationSec = 0;
+  let frameStepSec = 1 / 30;
+  let inPointSec = null;
+  let outPointSec = null;
 
   const CHAT_TIMEOUT_MS = 120000;
   const CHAT_WARN_MS = 20000;
@@ -127,6 +149,134 @@
     if (btnReset) btnReset.disabled = next;
   }
 
+  function clampTime(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.min(Math.max(numeric, 0), durationSec || numeric);
+  }
+
+  function formatMediaTime(value) {
+    const totalMs = Math.max(0, Math.round(Number(value || 0) * 1000));
+    const hours = Math.floor(totalMs / 3600000);
+    const minutes = Math.floor((totalMs % 3600000) / 60000);
+    const seconds = Math.floor((totalMs % 60000) / 1000);
+    const millis = totalMs % 1000;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+  }
+
+  function parseMediaTime(value) {
+    const text = String(value || "").trim().replace(",", ".");
+    if (!text) return null;
+    if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
+    const parts = text.split(":");
+    if (parts.length < 2 || parts.length > 3 || parts.some((part) => !/^\d+(?:\.\d+)?$/.test(part))) {
+      return null;
+    }
+    const values = parts.map(Number);
+    if (parts.length === 2) return values[0] * 60 + values[1];
+    return values[0] * 3600 + values[1] * 60 + values[2];
+  }
+
+  function setTimelineEnabled(enabled) {
+    [timelineRange, playPauseBtn, stepBackBtn, stepForwardBtn, frameBackBtn, frameForwardBtn,
+      timeInput, seekBtn, setInBtn, setOutBtn, clearRangeBtn, captureFrameBtn].forEach((element) => {
+      if (element) element.disabled = !enabled;
+    });
+  }
+
+  function updateTimelineStatus() {
+    if (!timelineStatus) return;
+    const invalid = inPointSec != null && outPointSec != null && inPointSec >= outPointSec;
+    if (invalid) {
+      timelineStatus.textContent = "范围无效：入点必须早于出点";
+      timelineStatus.classList.remove("has-range");
+      timelineStatus.classList.add("is-invalid");
+      return;
+    }
+    const range = [];
+    if (inPointSec != null) range.push(`in ${formatMediaTime(inPointSec)}`);
+    if (outPointSec != null) range.push(`out ${formatMediaTime(outPointSec)}`);
+    timelineStatus.textContent = range.length ? range.join("  /  ") : "尚未设置范围";
+    timelineStatus.classList.toggle("has-range", range.length > 0);
+    timelineStatus.classList.remove("is-invalid");
+  }
+
+  function syncTimeline() {
+    if (!player) return;
+    const current = Number.isFinite(player.currentTime) ? player.currentTime : 0;
+    if (currentTimeEl) currentTimeEl.textContent = formatMediaTime(current);
+    if (durationTimeEl) durationTimeEl.textContent = formatMediaTime(durationSec);
+    if (timelineRange) {
+      timelineRange.max = String(durationSec || 0);
+      timelineRange.value = String(clampTime(current));
+    }
+    if (timeInput && document.activeElement !== timeInput) timeInput.value = formatMediaTime(current);
+    if (playPauseBtn) playPauseBtn.textContent = player.paused ? "播放" : "暂停";
+    updateTimelineStatus();
+  }
+
+  function resetTimeline() {
+    durationSec = 0;
+    frameStepSec = 1 / 30;
+    inPointSec = null;
+    outPointSec = null;
+    setTimelineEnabled(false);
+    if (currentTimeEl) currentTimeEl.textContent = "00:00.000";
+    if (durationTimeEl) durationTimeEl.textContent = "00:00.000";
+    if (timelineRange) {
+      timelineRange.max = "0";
+      timelineRange.value = "0";
+    }
+    if (timeInput) timeInput.value = "";
+    if (timelineStatus) {
+      timelineStatus.textContent = "尚未加载视频";
+      timelineStatus.classList.remove("has-range", "is-invalid");
+    }
+  }
+
+  function seekTo(value) {
+    if (!player || !durationSec) return;
+    const target = clampTime(value);
+    player.currentTime = target;
+    syncTimeline();
+  }
+
+  function stepBy(delta) {
+    if (!player || !durationSec) return;
+    seekTo((player.currentTime || 0) + delta);
+  }
+
+  function setPoint(kind) {
+    if (!player || !durationSec) return;
+    const current = clampTime(player.currentTime);
+    if (kind === "in") inPointSec = current;
+    else outPointSec = current;
+    updateTimelineStatus();
+  }
+
+  async function captureCurrentFrame() {
+    if (!player || !durationSec) return;
+    captureFrameBtn.disabled = true;
+    try {
+      const res = await fetch("/api/previews/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ at_sec: clampTime(player.currentTime) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addBubble(formatDetail(data.detail) || "Frame capture failed", "system");
+        return;
+      }
+      addBubble(data.message || "Frame captured", "system");
+      if (data.state) applyState(data.state);
+    } catch (err) {
+      addBubble(friendlyClientError(err), "system");
+    } finally {
+      captureFrameBtn.disabled = false;
+    }
+  }
+
   function setPlayer(url, force = false, name = "") {
     if (!player || !playerEmpty) return;
     if (!url) {
@@ -136,6 +286,7 @@
       playerEmpty.classList.remove("is-hidden");
       currentPlayUrl = "";
       activeOutputName = "";
+      resetTimeline();
       highlightOutput();
       return;
     }
@@ -150,6 +301,7 @@
     player.load();
     player.classList.add("is-active");
     playerEmpty.classList.add("is-hidden");
+    resetTimeline();
     highlightOutput();
   }
 
@@ -582,6 +734,94 @@
     historyModal.setAttribute("aria-hidden", "true");
   }
 
+  function openMedia(kind = "outputs") {
+    if (!mediaModal) return;
+    mediaModal.hidden = false;
+    mediaModal.classList.add("is-open");
+    mediaModal.setAttribute("aria-hidden", "false");
+    const targetId = kind === "previews" ? "previews-title" : "outputs-title";
+    const target = document.getElementById(targetId);
+    target?.closest(".media-manager-section")?.scrollIntoView({ block: "nearest" });
+  }
+
+  function closeMedia() {
+    if (!mediaModal) return;
+    mediaModal.hidden = true;
+    mediaModal.classList.remove("is-open");
+    mediaModal.setAttribute("aria-hidden", "true");
+  }
+
+  if (player) {
+    player.addEventListener("loadedmetadata", () => {
+      durationSec = Number.isFinite(player.duration) ? Math.max(0, player.duration) : 0;
+      frameStepSec = 1 / 30;
+      setTimelineEnabled(durationSec > 0);
+      syncTimeline();
+    });
+    player.addEventListener("durationchange", () => {
+      durationSec = Number.isFinite(player.duration) ? Math.max(0, player.duration) : durationSec;
+      setTimelineEnabled(durationSec > 0);
+      syncTimeline();
+    });
+    player.addEventListener("timeupdate", syncTimeline);
+    player.addEventListener("seeked", syncTimeline);
+    player.addEventListener("play", syncTimeline);
+    player.addEventListener("pause", syncTimeline);
+    player.addEventListener("ended", syncTimeline);
+  }
+
+  if (timelineRange) {
+    timelineRange.addEventListener("input", () => seekTo(Number(timelineRange.value)));
+  }
+  if (playPauseBtn) {
+    playPauseBtn.addEventListener("click", async () => {
+      if (!player || !durationSec) return;
+      if (player.paused) await player.play().catch(() => {});
+      else player.pause();
+      syncTimeline();
+    });
+  }
+  if (stepBackBtn) stepBackBtn.addEventListener("click", () => stepBy(-1));
+  if (stepForwardBtn) stepForwardBtn.addEventListener("click", () => stepBy(1));
+  if (frameBackBtn) frameBackBtn.addEventListener("click", () => stepBy(-frameStepSec));
+  if (frameForwardBtn) frameForwardBtn.addEventListener("click", () => stepBy(frameStepSec));
+  if (seekBtn) {
+    seekBtn.addEventListener("click", () => {
+      const parsed = parseMediaTime(timeInput?.value);
+      if (parsed == null) {
+        if (timelineStatus) timelineStatus.textContent = "请输入秒数或 HH:MM:SS.mmm";
+        return;
+      }
+      seekTo(parsed);
+    });
+  }
+  if (timeInput) {
+    timeInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        seekBtn?.click();
+      }
+    });
+  }
+  if (setInBtn) setInBtn.addEventListener("click", () => setPoint("in"));
+  if (setOutBtn) setOutBtn.addEventListener("click", () => setPoint("out"));
+  if (clearRangeBtn) {
+    clearRangeBtn.addEventListener("click", () => {
+      inPointSec = null;
+      outPointSec = null;
+      updateTimelineStatus();
+    });
+  }
+  if (captureFrameBtn) captureFrameBtn.addEventListener("click", captureCurrentFrame);
+
+  if (btnOpenOutputs) btnOpenOutputs.addEventListener("click", () => openMedia("outputs"));
+  if (btnOpenPreviews) btnOpenPreviews.addEventListener("click", () => openMedia("previews"));
+  if (mediaModal) {
+    mediaModal.addEventListener("click", (event) => {
+      if (event.target.closest("[data-close-media]")) closeMedia();
+    });
+  }
+
   async function refreshState() {
     const res = await fetch("/api/state");
     if (!res.ok) throw new Error(await res.text());
@@ -803,6 +1043,9 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && historyModal && historyModal.classList.contains("is-open")) {
       closeHistory();
+    }
+    if (e.key === "Escape" && mediaModal && mediaModal.classList.contains("is-open")) {
+      closeMedia();
     }
   });
 
