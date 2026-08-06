@@ -10,19 +10,21 @@
       href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/style.css?v=1.7.0" />
+    <link rel="stylesheet" href="/style.css?v=1.8.0" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true"></div>
     <main class="shell">
       <header class="brand">
         <p class="brand-mark">灵剪 <span>EditMate</span></p>
-        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.6</p>
+        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.8</p>
       </header>
 
       <section class="stage">
         <div class="player-panel">
-          <section class="welcome-card">
+          <div class="player-workspace">
+          <aside class="welcome-card">
+            <small class="welcome-kicker">AI 剪辑指南</small>
             <strong>不知道怎么剪？</strong>
             <span>把视频交给 AI 分析，它会结合语音、画面和时间点给出剪辑建议。</span>
             <div class="guide-lines">
@@ -30,13 +32,55 @@
               <span>② 点击“AI 教你怎么剪”</span>
               <span>③ 选择方案，确认后再导出</span>
             </div>
-          </section>
+          </aside>
+          <div class="player-main">
           <div class="player-frame">
             <video id="player" controls playsinline></video>
             <div id="player-empty" class="player-empty">
               <p>上传短视频，或直接对话使用默认样本</p>
             </div>
           </div>
+          <section class="timeline-controls" aria-label="Video timeline controls">
+            <div class="timeline-readout">
+              <span id="current-time">00:00.000</span>
+              <span class="timeline-separator">/</span>
+              <span id="duration-time">00:00.000</span>
+            </div>
+            <input
+              id="timeline-range"
+              class="timeline-range"
+              type="range"
+              min="0"
+              max="0"
+              step="0.001"
+              value="0"
+              disabled
+              aria-label="Seek video"
+            />
+            <div class="timeline-row">
+              <div class="timeline-transport">
+                <button id="btn-step-back" class="mini" type="button" title="后退一秒">-1秒</button>
+                <button id="btn-play-pause" class="mini primary-mini" type="button" disabled>播放</button>
+                <button id="btn-step-forward" class="mini" type="button" title="前进一秒">+1秒</button>
+                <button id="btn-frame-back" class="mini" type="button" title="上一帧">上一帧</button>
+                <button id="btn-frame-forward" class="mini" type="button" title="下一帧">下一帧</button>
+              </div>
+              <div class="time-jump">
+                <label for="time-input">时间</label>
+                <input id="time-input" type="text" inputmode="decimal" placeholder="00:00.000" disabled />
+                <button id="btn-seek" class="mini" type="button" disabled>跳转</button>
+              </div>
+            </div>
+            <div class="timeline-row timeline-mark-row">
+              <div class="mark-actions">
+                <button id="btn-set-in" class="mini" type="button" disabled>设为入点</button>
+                <button id="btn-set-out" class="mini" type="button" disabled>设为出点</button>
+                <button id="btn-clear-range" class="mini" type="button" disabled>清除范围</button>
+              </div>
+              <button id="btn-capture-frame" class="mini primary-mini" type="button" disabled>截取当前帧</button>
+            </div>
+            <p id="timeline-status" class="timeline-status" aria-live="polite">尚未加载视频</p>
+          </section>
           <div class="player-actions">
             <label class="btn primary upload-btn">
               上传视频
@@ -47,26 +91,18 @@
             <button id="btn-reset" class="btn ghost" type="button">新对话</button>
           </div>
           <p id="media-meta" class="media-meta">尚未选择工作视频</p>
-          <div class="outputs-block">
-            <div class="section-label">
-              成片列表 <span class="hint">点击播放 · 可批量管理</span>
-              <button id="btn-open-folder" class="linkish" type="button">打开文件夹</button>
-            </div>
-            <p id="output-dir" class="path-line" title="成片目录"></p>
-            <div class="media-toolbar">
-              <label><input id="output-select-all" type="checkbox" /> 全选</label>
-              <button id="btn-delete-outputs" class="mini danger-mini" type="button">删除选中</button>
-            </div>
-            <ul id="output-list" class="output-list">
-              <li class="empty-hint">暂无导出成片</li>
-            </ul>
+          <div class="media-library-actions" aria-label="媒体管理">
+            <button id="btn-open-outputs" class="media-library-btn" type="button">
+              <span class="media-library-icon">▣</span>
+              <span><strong>成片列表</strong><small>播放、使用、重命名或删除成片</small></span>
+            </button>
+            <button id="btn-open-previews" class="media-library-btn" type="button">
+              <span class="media-library-icon">▧</span>
+              <span><strong>截帧预览</strong><small>查看大图并管理时间点截图</small></span>
+            </button>
           </div>
-          <div class="section-label">截帧预览 <span class="hint">下方标注第几秒 · 可批量删除</span></div>
-          <div class="media-toolbar">
-            <label><input id="preview-select-all" type="checkbox" /> 全选</label>
-            <button id="btn-delete-previews" class="mini danger-mini" type="button">删除选中</button>
-          </div>
-          <div id="preview-strip" class="preview-strip" hidden></div>
+        </div>
+        </div>
         </div>
 
         <aside class="chat-panel">
@@ -113,6 +149,42 @@
       </div>
     </div>
 
-    <script src="/app.js?v=1.7.0"></script>
+    <div id="media-modal" class="modal" hidden aria-hidden="true">
+      <div class="modal-backdrop" data-close-media></div>
+      <div class="modal-card media-card" role="dialog" aria-labelledby="media-title">
+        <div class="modal-head">
+          <div>
+            <h2 id="media-title">媒体管理</h2>
+            <p id="output-dir" class="path-line" title="成片目录"></p>
+          </div>
+          <div class="modal-head-actions">
+            <button type="button" class="btn ghost" id="btn-open-folder">打开文件夹</button>
+            <button type="button" class="btn ghost" data-close-media>关闭</button>
+          </div>
+        </div>
+        <div class="media-modal-grid">
+          <section class="media-manager-section" aria-labelledby="outputs-title">
+            <div class="section-label" id="outputs-title">成片列表 <span class="hint">点击成片可播放</span></div>
+            <div class="media-toolbar">
+              <label><input id="output-select-all" type="checkbox" /> 全选</label>
+              <button id="btn-delete-outputs" class="mini danger-mini" type="button">删除选中</button>
+            </div>
+            <ul id="output-list" class="output-list">
+              <li class="empty-hint">暂无导出成片</li>
+            </ul>
+          </section>
+          <section class="media-manager-section" aria-labelledby="previews-title">
+            <div class="section-label" id="previews-title">截帧预览 <span class="hint">点击图片查看大图</span></div>
+            <div class="media-toolbar">
+              <label><input id="preview-select-all" type="checkbox" /> 全选</label>
+              <button id="btn-delete-previews" class="mini danger-mini" type="button">删除选中</button>
+            </div>
+            <div id="preview-strip" class="preview-strip" hidden></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js?v=1.8.0"></script>
   </body>
 </html>
