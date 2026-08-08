@@ -1,306 +1,986 @@
-# 学习指南：从这个项目学会 Agent 开发
+# 灵剪 EditMate 学习日志（Agent 开发实习方向）
 
-面向：准大四、Python 基础一般、想投 **Agent 开发实习** 的同学。  
-仓库：[video-editing-agent](https://github.com/guorunquan/video-editing-agent)
+> 学习者背景：准大四，目标岗位为 Agent 开发实习生。
+> 记录方式：按日期持续追加；每一天都以当前仓库源码为准，不只记录“用了什么”，还要回答“为什么这样设计、代码怎样流动、面试怎样表达”。
+> 当前代码版本：`v1.8.0`（Git 标签）；今天只记录 **2026-08-08**。
 
-**相关文档：**
+如果想每天用较短时间学习，请先看精简版 [`DAILY_LEARNING.md`](./DAILY_LEARNING.md)；本文作为详细知识库，用于查漏补缺和准备面试追问。
 
-| 文档 | 用途 |
-|------|------|
-| [USAGE.md](./USAGE.md) | 先会用：安装与说法 |
-| [README.md](./README.md) | 仓库总览 |
-| [PROBLEMS.md](./PROBLEMS.md) | 排障与真实踩坑 |
-| [HANDOFF.md](./HANDOFF.md) | 工程交接（扩展工具前建议读） |
+---
 
-目标不是背完整 FFmpeg，而是能讲清、能改、能扩展下面这条链路：
+# 2026-08-08｜Day 1：认识整个项目，吃透 Agent 的最小闭环
+
+## 1. 今天学完应该达到什么程度
+
+今天不追求记住每一条 FFmpeg 参数，而是先建立一张完整的项目地图。学完后，应当能做到：
+
+- 用 30 秒说明这个项目解决什么问题、为什么它属于 Agent 项目；
+- 说清楚 Gemini、`agent.py`、`tools.py`、FFmpeg、FastAPI 分别负责什么；
+- 从“用户输入一句中文”开始，完整讲出一次 Tool Calling 的执行过程；
+- 解释为什么模型不能直接执行任意 FFmpeg 命令；
+- 解释 `confirmed=false/true` 这套 Human-in-the-loop（人在回路）机制；
+- 说清 v1.8 时间轴已经实现什么、还没有实现什么；
+- 能指出当前工程至少 3 个真实不足，而不是把学习项目包装成成熟产品。
+
+今天最重要的一句话是：
+
+> **Agent 不是一个会聊天的大模型，而是“大模型决策 + 工具执行 + 状态管理 + 安全约束 + 结果反馈”组成的系统。**
+
+---
+
+## 2. 先用产品视角理解项目
+
+### 2.1 项目做什么
+
+“灵剪 EditMate”是一个自然语言驱动的本地视频剪辑 Agent。用户不必先学复杂剪辑软件，可以直接说：
+
+- “去掉前 5 秒”；
+- “只保留 10 秒到 30 秒”；
+- “把这两个视频拼起来”；
+- “加一个标题：今日高光”；
+- “自动生成字幕”；
+- “这个视频应该怎么剪？”
+
+系统会理解意图、选择受控工具、生成待确认计划，用户确认后再调用 FFmpeg 导出新视频。它同时提供 CLI 和本地网页两种入口。
+
+### 2.2 为什么它不是普通聊天机器人
+
+普通聊天机器人收到“去掉前 5 秒”后，最多告诉你 FFmpeg 命令。这个项目会真的产生一个新视频文件，因为它具备：
+
+1. **理解能力**：Gemini 将自然语言转换为工具名和参数；
+2. **行动能力**：Python 执行工具函数，FFmpeg 读写视频；
+3. **状态能力**：记住当前工作视频、对话历史、最近成片；
+4. **安全能力**：写文件前确认、限制可操作目录、拒绝任意 shell 命令；
+5. **反馈能力**：工具结果返回给模型，模型再向用户解释结果。
+
+因此它是一个典型的 **Tool-Using Agent（工具型 Agent）**，更准确地说，是一个有明确工作流和边界的垂直领域 Agent，而不是能够无限自主规划的通用智能体。
+
+### 2.3 当前 v1.8 的真实能力边界
+
+当前仓库已经有 15 个注册给模型的工具：
+
+| 类型 | 工具 | 作用 |
+|---|---|---|
+| 信息读取 | `probe_video` | 获取时长、分辨率、大小、音轨情况 |
+| 基础剪辑 | `trim_keep` | 保留指定时间段 |
+| 基础剪辑 | `cut_out` | 删除中间指定时间段并拼回前后内容 |
+| 基础剪辑 | `concat_videos` | 拼接多个视频 |
+| 音视频处理 | `mute_audio` | 移除音轨 |
+| 音视频处理 | `change_speed` | 0.5～2.0 倍变速 |
+| 画面包装 | `add_text_overlay` | 添加标题、单行字幕或角标 |
+| 字幕 | `add_auto_subtitles` | 用本地 faster-whisper 转录并烧录字幕 |
+| 字幕 | `edit_subtitles` | 修改单条或批量修改已有 SRT，再重新烧录 |
+| 水印 | `remove_watermark` | 模糊或遮盖固定区域水印 |
+| 预览 | `export_preview_frame` | 按时间截取一帧图片 |
+| 成片管理 | `open_output` | 打开或准备预览成片 |
+| 成片管理 | `list_outputs` | 列出导出结果 |
+| 成片管理 | `delete_output` | 删除 `output/` 内成片 |
+| 成片管理 | `rename_output` | 重命名 `output/` 内成片 |
+
+此外还有一条独立的“AI 视频分析”路径：把视频交给 Gemini 做多模态理解，返回带时间点和证据的剪辑建议。这条路径目前不是注册 Tool，而是 `agent.py` 先通过关键词判断，再直接调用 `video_analysis.py`。
+
+需要诚实说明的边界：
+
+- 这是本地单用户 Demo，不是可公网部署的多租户服务；
+- 没有多轨编辑器、真正的时间线工程状态、任务队列和流式输出；
+- 自动字幕使用本地 Whisper，但视频理解默认会上传视频给 Gemini，所以不能笼统宣称“所有数据完全不离开本机”；
+- 水印功能只处理固定区域，不能跟踪移动水印，也不能保证无痕恢复；
+- Agent 会选择已有白名单工具，但不会安全地执行任意用户生成代码；
+- v1.8 的入点和出点目前只是前端标记，还没有连接到实际剪辑工具。
+
+---
+
+## 3. 技术栈全景：每项技术为什么存在
+
+| 层级 | 技术 | 在项目中的职责 | 实习需要掌握到什么程度 |
+|---|---|---|---|
+| 编程语言 | Python 3.10+ | Agent 编排、工具实现、API、文件处理 | 必须能独立读写函数、类、异常、类型标注、`Path`、JSON |
+| 大模型 | Google Gemini | 理解中文、选择工具、填写参数、组织最终回答、多模态视频分析 | 理解提示词、Tool Calling、上下文、模型错误与配额 |
+| 模型 SDK | `google-genai` | 创建客户端、声明 Function、发送 Content、接收 Function Call | 能看懂一次完整 SDK 调用，知道 SDK 不等于 Agent 框架 |
+| 视频引擎 | FFmpeg | 真正执行切片、拼接、转码、叠字、字幕、水印、截帧 | 不必背完；要懂输入、输出、filter、stream copy、重编码 |
+| FFmpeg 获取 | `imageio-ffmpeg` | 系统没有 FFmpeg 时提供可执行文件 | 理解外部二进制依赖与跨平台兜底 |
+| Web 后端 | FastAPI | 上传、聊天、状态、历史、成片管理、媒体文件接口 | 能理解路由、请求模型、HTTP 状态码、同步与异步边界 |
+| 数据校验 | Pydantic | 校验请求字段长度、类型和范围 | 知道“边界处验证输入”的价值 |
+| Web 服务器 | Uvicorn | 运行 FastAPI 应用 | 会启动、看日志、理解开发服务器角色 |
+| Web 前端 | 原生 HTML/CSS/JavaScript | 播放器、时间轴、聊天、确认卡片、媒体管理 | Agent 后端岗不必精通，但要能联调 REST API 和状态 |
+| 配置 | `.env` + `python-dotenv` | 保存 Key、模型、代理、超时、默认视频等 | 必须知道密钥不能硬编码或提交 Git |
+| 中文转换 | OpenCC | 将字幕统一为简体中文 | 理解文本后处理也是 Agent 工具链的一部分 |
+| 本地语音识别 | faster-whisper（可选） | 语音转带时间戳文本、生成字幕 | 理解 ASR、模型大小、CPU/显存、可选依赖 |
+| 测试 | `unittest` + `mock` | 验证确认结构、路径安全、时间戳、字幕替换等 | 至少会为工具参数与安全边界写单元测试 |
+| 工程管理 | Git/GitHub | 版本、标签、项目展示 | 会写有意义的提交、Tag、README 和问题记录 |
+
+一个容易混淆的概念：这个项目用了 `google-genai` **SDK**，但没有使用 LangChain、LangGraph 等 Agent 框架。Agent 循环是自己在 `agent.py` 里实现的。对学习非常有价值，因为你能直接看到框架通常替你隐藏的细节。
+
+---
+
+## 4. 仓库地图：每个文件在系统中处于哪一层
 
 ```text
-用户说话 → 大模型选工具 → 你的 Python 执行 → 结果回给模型 → 回答用户
+用户
+├─ CLI：main.py
+└─ Web：static/index.html + static/app.js
+          ↓ HTTP
+       web_app.py（FastAPI、会话、媒体状态、接口校验）
+          ↓
+       agent.py（提示词、Gemini 客户端、Tool Calling 循环）
+          ├─ video_analysis.py（多模态视频理解特殊分支）
+          └─ tools.py（白名单工具、参数校验、文件状态）
+                    ↓
+                FFmpeg / faster-whisper
+                    ↓
+       output/、uploads/、data/、samples/
+```
+
+主要文件职责：
+
+| 文件或目录 | 职责 | 阅读时最该问的问题 |
+|---|---|---|
+| [`main.py`](./main.py) | CLI 输入循环 | 用户文字怎样进入 `VideoAgent.chat()`？ |
+| [`agent.py`](./agent.py) | Agent 核心编排 | 模型怎样看到工具？Function Call 怎样执行和回传？ |
+| [`tools.py`](./tools.py) | 15 个工具的实现、Schema 和分发器 | 如何保证模型只能调用允许的动作？ |
+| [`video_analysis.py`](./video_analysis.py) | 视频上传、可选本地转录、结构化分析、缓存 | 多模态模型怎样输出可使用的剪辑建议？ |
+| [`web_app.py`](./web_app.py) | FastAPI API、本地会话、媒体路径安全、任务状态 | Web 层如何复用同一个 Agent？ |
+| [`static/index.html`](./static/index.html) | 页面结构 | 时间轴、播放器和媒体弹窗有哪些控件？ |
+| [`static/app.js`](./static/app.js) | 前端状态和接口调用 | 浏览器时间怎样同步？确认按钮怎样变成“确认”消息？ |
+| [`static/style.css`](./static/style.css) | 页面样式和响应式布局 | UI 层与 Agent 逻辑为什么要解耦？ |
+| [`ffmpeg_bin.py`](./ffmpeg_bin.py) | 寻找 FFmpeg | 如何兼容系统 PATH 与包内二进制？ |
+| [`tests/test_v1.py`](./tests/test_v1.py) | 当前 11 个单元测试 | 哪些风险被测了，哪些关键链路还没被测？ |
+| `.env.example` | 可公开的配置模板 | Key、模型、代理、超时分别影响什么？ |
+| `uploads/` | 网页上传素材 | 用户输入文件进入系统后的落点 |
+| `output/` | 成片和 `previews/` 截帧 | Agent 写操作的受控目录 |
+| `data/` | 当前工作视频、会话、最近任务、分析缓存 | “记忆”分别存在哪里？ |
+
+注意：`README.md`、`USAGE.md`、`HANDOFF.md` 和 `main.py` 中仍有 v1.7 或 v0.5 文案，而实际 Web 代码与 Git 标签已经是 v1.8.0。这是一次真实的工程提醒：**版本不是只改一个常量，代码、测试、用户文档、交接文档和发布记录必须一起更新。**
+
+---
+
+## 5. 核心中的核心：一次 Tool Calling 到底怎样发生
+
+以用户在网页输入“只保留 5 秒到 20 秒”为例。
+
+### 第 1 步：Web 接收用户消息
+
+前端 `static/app.js` 向 `POST /api/chat` 发送：
+
+```json
+{
+  "message": "只保留 5 秒到 20 秒"
+}
+```
+
+`web_app.py` 用 `ChatRequest` 校验消息非空、最长 4000 字，写入本地会话记录，然后调用：
+
+```python
+reply = agent.chat(text)
+```
+
+这里体现了一个基础工程原则：**系统边界处先校验，再进入核心逻辑。**
+
+### 第 2 步：Agent 将用户消息加入模型上下文
+
+`VideoAgent.chat()` 把文字包装成 Gemini 的 `types.Content`：
+
+```python
+self.history.append(
+    types.Content(role="user", parts=[types.Part(text=user_text)])
+)
+```
+
+`self.history` 是模型上下文记忆。它保存用户消息、模型回复和工具结果。没有这些历史，模型无法理解“确认”“继续处理刚才的视频”等依赖前文的表达。
+
+### 第 3 步：把系统提示词和工具说明书一起发给 Gemini
+
+核心请求大致是：
+
+```python
+response = self.client.models.generate_content(
+    model=self.model,
+    contents=self.history,
+    config=types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        tools=self.tools,
+    ),
+)
+```
+
+模型同时看到三类信息：
+
+1. `SYSTEM_PROMPT`：行为规则，例如“写文件必须先确认”；
+2. `history`：这轮以及之前发生了什么；
+3. `tools`：允许调用哪些函数、参数叫什么、类型和含义是什么。
+
+### 第 4 步：模型返回 Function Call，而不是自己剪视频
+
+模型可能返回类似下面的结构：
+
+```json
+{
+  "name": "trim_keep",
+  "args": {
+    "start_sec": 5,
+    "end_sec": 20,
+    "confirmed": false
+  }
+}
+```
+
+这只是一个“调用意图”，不是 Python 函数已经执行。**模型没有直接操作文件的权限。**
+
+### 第 5 步：Python 分发器执行白名单工具
+
+`agent.py` 取出 `function_call.name` 和参数，再调用：
+
+```python
+result = run_tool(name, args)
+```
+
+`tools.py` 的 `run_tool()` 是显式 `if` 分发器。只有在代码中注册的名字才能执行；未知名字只会返回“未知工具”。最终进入：
+
+```python
+trim_keep(
+    start_sec=5,
+    end_sec=20,
+    confirmed=False,
+)
+```
+
+### 第 6 步：第一次只产生计划，不写视频
+
+`trim_keep()` 验证时间范围、读取视频时长、计算保留长度。因为 `confirmed=False`，它调用 `_pending()`，返回机器可读标记和人类可读摘要：
+
+```json
+{
+  "status": "pending",
+  "needs_confirm": true,
+  "tool_name": "trim_keep",
+  "plan": {
+    "start_sec": 5,
+    "end_sec": 20,
+    "keep_sec": 15
+  }
+}
+```
+
+此时 FFmpeg 还没有导出文件。
+
+### 第 7 步：工具结果回传给模型
+
+Agent 把结果包装成 Function Response：
+
+```python
+types.Part.from_function_response(
+    name=name,
+    response={"result": result},
+)
+```
+
+然后继续下一轮模型请求。模型依据真实工具结果生成自然语言，而不是凭空声称“已经完成”。这就是 Agent 的 **observation（观察结果）**。
+
+### 第 8 步：网页展示确认卡片
+
+`agent.py` 从工具结果中识别 `【待确认】` 和 `__VIDEO_AGENT_PENDING__...`，设置：
+
+- `last_needs_confirm=True`；
+- `last_confirmation=结构化计划`。
+
+`web_app.py` 将它们作为 `needs_confirm` 和 `confirmation` 返回。前端展示“确认执行 / 取消”按钮。
+
+### 第 9 步：用户确认后再次调用工具
+
+用户点击“确认执行”时，前端实际上再次发送文字“确认”。模型结合历史和系统提示，重新调用同一个工具，但这次参数为：
+
+```json
+{
+  "start_sec": 5,
+  "end_sec": 20,
+  "confirmed": true
+}
+```
+
+`trim_keep()` 才真正执行 FFmpeg，验证输出存在且非空，记录当前工作视频和最近任务，返回包含：
+
+```json
+{
+  "status": "ok",
+  "output": ".../output/trim_5_20_时间戳.mp4"
+}
+```
+
+Agent 看到真实的 `status=ok` 后才应该向用户说完成。
+
+### 这条链路对应的 Agent 通用模型
+
+```text
+用户目标
+  ↓
+LLM 推理并选择 Action
+  ↓
+受控 Runtime 执行 Tool
+  ↓
+返回 Observation
+  ↓
+LLM 决定继续调用工具或给出 Final Answer
+```
+
+很多 Agent 框架叫它“Reason-Act-Observe 循环”。本项目没有展示模型的私有思维过程，但工程结构就是“决策—行动—观察—再决策”。
+
+---
+
+## 6. 一个工具为什么有三层，而不是只写一个函数
+
+以 `trim_keep` 为例，完整工具至少有三部分。
+
+### 6.1 工具实现：系统实际能做什么
+
+位置：`tools.py` 的 `trim_keep()`。
+
+它负责：
+
+- 解析源视频；
+- 将参数转换为数字；
+- 校验 `0 <= start < end`；
+- 避免起点超过总时长；
+- 生成确认计划；
+- 用户确认后组装 FFmpeg 参数；
+- 检查返回码、输出文件是否存在、大小是否大于 0；
+- 更新当前工作视频与最近任务。
+
+### 6.2 Tool Schema：告诉模型怎样调用
+
+位置：`tools.py` 的 `TOOL_DECLARATIONS`。
+
+Schema 描述了：
+
+- 工具名：`trim_keep`；
+- 适用语义：只保留区间，不是删除中间；
+- 参数：`start_sec`、`end_sec`、`path`、`precise`、`confirmed`；
+- 参数类型和必填项。
+
+Schema 本质上是模型与代码之间的 API 合同。描述含糊时，模型会选错工具或填错参数；但 Schema 也不能代替后端校验，因为模型输出永远不能被当作可信输入。
+
+### 6.3 Dispatcher：将名字映射到函数
+
+位置：`tools.py` 的 `run_tool()`。
+
+它把模型给出的字符串工具名映射到真实 Python 函数，并设置默认值、转换部分参数类型。
+
+因此，新增一个 Agent 工具通常需要同时完成：
+
+1. 写确定性的 Python 函数；
+2. 写准确的 Tool Schema；
+3. 加入分发器；
+4. 必要时在 System Prompt 中补充调用策略；
+5. 增加正常、异常、安全和确认流程测试。
+
+只完成第 1 步，模型看不到它；只完成 Schema 没有实现，运行时会失败；实现和描述语义不一致，模型会稳定地“错误使用正确代码”。
+
+---
+
+## 7. System Prompt 在这里不是文案，而是编排策略
+
+`agent.py` 的 `SYSTEM_PROMPT` 包含很多业务规则，例如：
+
+- “去掉前 N 秒”应调用 `trim_keep`；
+- “删掉 A 到 B 秒”应调用 `cut_out`；
+- 拼接并命名要先 `concat_videos`，再 `rename_output`；
+- 改已有字幕必须用 `edit_subtitles`，不能用 `add_text_overlay`；
+- 写文件先 `confirmed=false`，确认后才 `confirmed=true`；
+- 视频分析阶段不得自动改文件。
+
+这说明 Prompt 在 Agent 系统中的作用不只是设定语气，还承担了部分：
+
+- 意图路由；
+- 工具选择规则；
+- 多工具顺序；
+- 安全策略；
+- 成功判定；
+- 错误时禁止虚假汇报。
+
+但要记住一个重要面试观点：
+
+> **Prompt 适合表达软策略，代码必须守住硬约束。**
+
+例如“写操作先确认”目前既写在 Prompt 中，也由工具的 `confirmed` 分支控制，这是正确方向。若只写 Prompt，没有代码检查，模型偶尔不遵守时就可能直接改文件。
+
+当前实现仍有改进空间：很多策略依赖中文关键词和字符串标记，未来可改成显式状态机和结构化 Tool Result，减少脆弱的字符串解析。
+
+---
+
+## 8. 状态与记忆：本项目其实有四种“记忆”
+
+很多初学者会把所有 history 都叫“记忆”，但这个项目至少有四类状态。
+
+### 8.1 模型上下文记忆
+
+位置：`VideoAgent.history`，保存在进程内存。
+
+用途：让 Gemini 理解当前多轮 Tool Calling 和“确认”“采用方案 1”等上下文。
+
+限制：进程重启就丢失；它也没有自动从网页历史文件恢复。
+
+### 8.2 网页展示历史
+
+位置：`data/chat_sessions.json`。
+
+用途：网页按日期展示会话，最多 40 个会话、每个最多 200 条；间隔 3 小时会自动开新会话。
+
+关键区别：它是给用户查看的持久化聊天记录，不等于模型当前真正持有的 `self.history`。网页能看到旧对话，不代表模型恢复了旧对话的推理上下文。
+
+### 8.3 工作视频状态
+
+位置：`data/session.json` 中的 `working_video`。
+
+源视频选择优先级为：
+
+```text
+显式 path > 当前工作视频 > 可选的最新成片 > 默认 samples/demo.mp4
+```
+
+这解决了用户说“继续给这个视频加标题”时，工具要知道“这个视频”指什么。
+
+### 8.4 任务与分析缓存
+
+- `data/last_job.json`：最近一次工具执行结果；
+- `data/video_analysis/cache.json`：根据文件路径、大小和修改时间生成缓存键，避免重复上传分析同一视频；
+- `web_app.py` 的 `_job_state`：进程内的 Web 任务状态。
+
+Agent 开发实习中要能区分：
+
+- **conversation state**：对话发生过什么；
+- **business state**：当前操作对象和任务状态；
+- **persistent memory**：重启后仍能恢复的数据；
+- **working memory**：只在当前推理上下文中存在的数据。
+
+---
+
+## 9. Human-in-the-loop：为什么确认机制是项目亮点
+
+Human-in-the-loop（HITL）指 Agent 在高风险或不可轻易撤销的动作前，把决策交还给人。
+
+本项目将操作分成两类：
+
+### 无需确认的读取或预览动作
+
+- 查看视频信息；
+- 列出成片；
+- 打开成片；
+- 截取预览帧。
+
+### 需要确认的写操作
+
+- 切片、删除中间、拼接；
+- 静音、变速、叠字；
+- 生成或修改字幕；
+- 水印处理；
+- 删除或重命名成片。
+
+第一次调用只返回 plan，第二次携带 `confirmed=true` 才执行。这一模式可以迁移到很多 Agent 场景：
+
+- 邮件 Agent：先生成草稿，再由用户确认发送；
+- 数据库 Agent：先展示 SQL 和影响行数，再确认更新；
+- 运维 Agent：先展示部署计划，再确认发布；
+- 财务 Agent：先生成付款计划，再由授权人审批。
+
+面试时不要只说“我加了确认按钮”。更好的说法是：
+
+> 我把有副作用的工具设计成 plan/apply 两阶段协议。第一次调用返回结构化 pending plan，Web 根据 `needs_confirm` 展示审批 UI；用户确认后，模型在同一上下文中以相同参数和 `confirmed=true` 再次调用。这样将 LLM 的建议权和最终执行权分开。
+
+当前不足也要看见：确认状态主要依赖模型历史、返回字符串和正则提取；更稳妥的做法是后端生成 `plan_id`，保存规范化参数，确认接口直接按 `plan_id` 执行，避免模型第二次重新生成参数时发生漂移。
+
+---
+
+## 10. FFmpeg 工具层：确定性程序才是真正的“手”
+
+Gemini 不负责视频编码，FFmpeg 才负责。Python 用 `subprocess.run()` 传入参数列表：
+
+```python
+subprocess.run(
+    cmd,
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="replace",
+)
+```
+
+这里使用参数列表，并且没有 `shell=True`。这样能显著降低命令注入风险。模型只能填写预先定义的字段，不能生成一整段任意 shell 命令直接执行。
+
+### 10.1 快速切片与精密切片
+
+`trim_keep()` 有两种策略。
+
+快速切片：
+
+```text
+-ss 起点 -i 输入 -t 时长 -c copy 输出
+```
+
+- 不重新编码，速度快、画质无额外损失；
+- 受关键帧影响，切点可能不够精确；
+- 如果失败，代码会自动回退到重编码。
+
+精密切片：
+
+```text
+-ss 起点 -i 输入 -t 时长 -c:v libx264 -c:a aac -movflags +faststart 输出
+```
+
+- 重新编码，切点通常更准；
+- 更慢、更耗 CPU；
+- `+faststart` 将 MP4 元数据前移，更适合网页尽快播放。
+
+这体现了工程中的 trade-off：**速度、精度、资源消耗之间没有永远最优，工具要给出策略并提供失败回退。**
+
+### 10.2 为什么要检查输出，而不只检查返回码
+
+本项目用 `_encode_ok()` 同时检查：
+
+- 进程返回码为 0；
+- 输出文件确实存在；
+- 输出大小大于 0。
+
+这是 Agent 工具可靠性的基本要求。模型最终回答必须建立在可验证的工具结果上，而不是“函数没有抛异常，所以大概成功了”。
+
+### 10.3 工具层还有哪些可靠性问题
+
+当前 `_run()` 没有设置 FFmpeg 超时。异常大文件或进程卡住时，请求可能长时间占用服务。生产化时应补：
+
+- 超时与进程终止；
+- 可取消任务；
+- 实时进度解析；
+- 临时文件清理；
+- 磁盘空间检查；
+- 幂等性与重复请求保护；
+- 统一结构化错误码。
+
+---
+
+## 11. 视频分析不是 Tool Calling，而是“确定性路由 + 多模态模型”
+
+当用户输入包含“怎么剪”“剪辑建议”等关键词时，`agent.py` 不进入普通工具循环，而是直接调用 `analyze_video()`。
+
+执行过程：
+
+1. 根据当前工作视频生成缓存键；
+2. 命中缓存则直接格式化旧结果；
+3. 对非 ASCII 路径创建临时英文路径副本，规避上传兼容问题；
+4. 可选调用本地 faster-whisper 获取带时间戳转录；
+5. 把视频上传给 Gemini Files API；
+6. 轮询文件处理状态，最多等待配置的超时时间；
+7. 要求 Gemini 以 JSON 返回摘要、证据、建议和时间段；
+8. 解析 JSON、保存缓存，再格式化成中文建议。
+
+这是一种 **hybrid orchestration（混合编排）**：
+
+- 明确的“分析意图”由代码关键词路由，结果稳定、成本可控；
+- 开放式剪辑命令交给模型进行 Tool Calling，灵活处理自然语言。
+
+它也有不足：关键词路由会漏掉“帮我找精彩片段”这类没有命中关键词但语义相同的表达。可改进为轻量意图分类器、统一 Router Tool，或让模型输出结构化 intent 后由代码决定后续工作流。
+
+另一个隐私重点：本地 Whisper 只代表语音转录可以在本地进行，视频分析仍会上传视频给 Gemini。简历和答辩中必须准确表述。
+
+---
+
+## 12. FastAPI Web 层：Agent 产品不只有模型循环
+
+`web_app.py` 把 Agent 包装成用户可用的产品，主要负责：
+
+- 上传并校验视频格式与大小；
+- 维护本地聊天会话；
+- 调用同一个 `VideoAgent`；
+- 返回确认计划；
+- 提供工作视频、成片、截帧状态；
+- 重命名、批量删除、下载和打开文件位置；
+- 将允许目录内的媒体文件提供给浏览器播放；
+- 把 Gemini 的网络、429、503 等错误转换成用户能理解的提示。
+
+### 12.1 输入验证
+
+Pydantic 限制了消息长度、文件名长度、截帧时间范围和批量删除数量。例如 `FrameCaptureRequest.at_sec` 必须在 0 到 24 小时之间，后端还额外验证它是有限数字。
+
+这告诉我们：Agent 系统仍然是普通软件系统，LLM 并不能代替 API 验证、权限校验和错误处理。
+
+### 12.2 路径白名单
+
+媒体访问被限制在：
+
+- `uploads/`；
+- `output/`；
+- `samples/`。
+
+删除预览时又进一步限制在 `output/previews/`。代码通过 `Path.resolve()` 加 `relative_to(allowed_root)` 防止 `../` 路径穿越。
+
+这是一个很好的面试点：即使前端只传文件名，后端仍不能信任它，因为攻击者可以绕过前端直接请求 API。
+
+### 12.3 当前“任务状态”还不是真正异步任务
+
+接口生成了 `job_id`，也有 `/api/jobs/{job_id}`，但 `/api/chat` 仍同步等待 `agent.chat()` 完成后才返回。`_job_state` 只存在内存里，进程重启就丢失。
+
+生产化版本通常会使用：
+
+- 后台任务队列（如 Celery/RQ/Dramatiq，或至少 FastAPI BackgroundTasks）；
+- Redis/数据库保存任务状态；
+- WebSocket 或 SSE 推送进度；
+- 取消、重试、超时、幂等键；
+- 按用户隔离任务和文件。
+
+### 12.4 当前并发锁的局限
+
+`_chat_lock` 是一个全局布尔值，用于避免用户连续点击堆积请求。对本地单进程 Demo 足够直观，但多线程、多进程或多用户环境下不可靠，也会让一个用户阻塞所有用户。生产环境要改为会话级锁、分布式锁或任务队列。
+
+---
+
+## 13. v1.8 专题：时间轴到底实现了什么
+
+v1.8 的主要改动集中在 `web_app.py` 和 `static/`，新增了更像剪辑器的播放控制和媒体管理体验。
+
+### 13.1 已实现的时间轴能力
+
+浏览器端现在可以：
+
+- 显示当前时间与总时长；
+- 拖动 range 控件跳转；
+- 播放/暂停；
+- 前进或后退 1 秒；
+- 按固定的 `1/30` 秒前进或后退一“帧”；
+- 输入秒数或 `HH:MM:SS.mmm` 精确跳转；
+- 把当前播放位置标记为入点或出点；
+- 校验入点必须早于出点；
+- 清除入点/出点；
+- 调用后端接口截取当前帧；
+- 在媒体管理弹窗中查看成片与截帧。
+
+### 13.2 当前帧截取怎样贯通前后端
+
+前端读取 `player.currentTime`，调用：
+
+```http
+POST /api/previews/capture
+Content-Type: application/json
+
+{
+  "at_sec": 12.345
+}
+```
+
+后端执行：
+
+1. 找当前工作视频或最新成片；
+2. 校验路径在允许目录内；
+3. 读取视频总时长；
+4. 将时间限制在合法范围内；
+5. 调用 FFmpeg 输出 `preview_12.345s_xxxxxxxx.png`；
+6. 返回新的媒体状态，前端刷新截帧列表。
+
+这条链路没有经过 LLM，是普通的确定性 API。一个成熟 Agent 产品应当把“需要自然语言推理的动作”和“明确按钮能完成的动作”分开。不是所有功能都应该绕大模型一圈，否则会增加延迟、成本和不确定性。
+
+### 13.3 v1.8 最重要的未完成点
+
+入点 `inPointSec` 和出点 `outPointSec` 只存放在 `static/app.js` 的浏览器变量中。当前没有：
+
+- 把范围发送给后端；
+- 自动填入聊天框；
+- 调用 `trim_keep`；
+- 生成确认计划；
+- 刷新页面后恢复范围。
+
+所以准确描述应是：
+
+> v1.8 增加了视频时间轴预览、定位、范围标记和当前帧截取，但范围标记尚未与 Agent 剪辑执行链路打通。
+
+不能说“v1.8 已实现图形时间线剪辑”，因为这会夸大当前能力。
+
+### 13.4 “上一帧/下一帧”也不是严格逐帧
+
+前端把帧间隔固定为 `1/30` 秒，没有读取视频真实帧率。对于 24fps、25fps、60fps 或可变帧率视频，它并不是真正的一帧。另外 HTML Video 的 seek 也受浏览器和关键帧影响。
+
+更严谨的实现可以：
+
+- 后端用 ffprobe 读取平均帧率；
+- 将 fps 随媒体状态返回前端；
+- 使用 `1 / fps` 作为步长；
+- 对可变帧率视频明确提示“近似逐帧”；
+- 若追求专业精度，使用时间码/帧号并由后端解码指定帧。
+
+能指出这些细节，说明你不是只会把按钮做出来，而是在理解媒体系统的准确性边界。
+
+---
+
+## 14. 当前项目已经体现出的 Agent 工程能力
+
+如果目标是 Agent 开发实习，下面这些内容比“会调用大模型 API”更重要。
+
+### 14.1 能力边界设计
+
+模型只能看到 15 个声明好的工具，真正执行通过 `run_tool()` 白名单分发。能力边界由代码决定，不由模型自由发挥。
+
+### 14.2 结构化输入输出
+
+工具参数使用 JSON Schema；视频分析要求 JSON；确认计划包含机器可读 JSON。结构化协议能让 LLM 与确定性程序协作。
+
+### 14.3 多步编排
+
+Agent 最多进行 12 轮工具编排，支持“先拼接、再命名”或批量字幕修改等多步任务。循环结束条件是模型不再返回 Function Call，而是返回文本。
+
+### 14.4 有副作用操作的审批
+
+通过 plan/apply 两阶段降低误操作风险，体现了 Agent 系统中的权限与审计意识。
+
+### 14.5 状态管理
+
+同时管理模型 history、网页会话、工作视频、任务记录与分析缓存。虽然还不完善，但已经超出单轮 API Demo。
+
+### 14.6 可靠性与降级
+
+- 快速切片失败后回退到重编码；
+- 检查输出文件；
+- 处理代理、429、503、超时提示；
+- 视频分析使用缓存；
+- 中文路径上传时使用临时 ASCII 副本。
+
+### 14.7 安全边界
+
+- API Key 放环境变量；
+- FFmpeg 参数以列表执行，不使用任意 `shell=True`；
+- 文件操作限制在允许目录；
+- 对文件名做清洗；
+- 写操作要求确认；
+- 测试覆盖路径穿越和确认结构的一部分。
+
+---
+
+## 15. 为了 Agent 实习，你还必须补齐哪些知识
+
+### P0：近期必须掌握
+
+1. **Python 工程基础**
+   - 函数、类、类型标注、异常；
+   - `dict/list` 与 JSON；
+   - `pathlib.Path`；
+   - `subprocess`；
+   - 虚拟环境、依赖管理和环境变量。
+
+2. **LLM 基础**
+   - system/user/tool 等消息角色；
+   - token 与上下文窗口；
+   - temperature 等生成参数的含义；
+   - hallucination 为什么不能只靠提示词解决；
+   - 429、503、网络超时和重试策略。
+
+3. **Tool Calling**
+   - Tool Schema；
+   - 模型返回调用意图与程序真实执行的区别；
+   - Tool Result 如何回传；
+   - 多工具调用、停止条件、最大轮次；
+   - 参数验证、超时、幂等和权限。
+
+4. **Prompt 与 Workflow**
+   - Prompt 负责软策略；
+   - 代码负责硬约束；
+   - 何时用确定性路由，何时让模型选择；
+   - 何时需要状态机，而不该继续堆提示词。
+
+5. **FastAPI 与 HTTP**
+   - GET/POST、JSON、状态码；
+   - Pydantic 校验；
+   - 文件上传；
+   - 同步请求与后台任务；
+   - 鉴权、并发和数据隔离的基本概念。
+
+6. **测试与评估**
+   - 工具单元测试；
+   - API 集成测试；
+   - 模型是否选对工具的 Agent Eval；
+   - 固定测试集、成功率、延迟、成本；
+   - 不把“我手动试过一次”当作可靠性证明。
+
+### P1：投递前应理解
+
+- RAG 的基本链路：切分、Embedding、向量检索、重排、引用；本项目当前没有 RAG，不要混用概念；
+- MCP 的目的：标准化模型与外部工具/资源的连接；本项目当前是 SDK Function Calling，不是 MCP；
+- LangChain/LangGraph 等框架解决什么问题，以及不用框架的代价；
+- Redis、数据库、消息队列怎样承载会话、任务、缓存和锁；
+- SSE/WebSocket 流式反馈；
+- 日志、Tracing、Tool 调用耗时、失败率和 token 成本；
+- Prompt Injection、路径穿越、越权、敏感信息泄漏等安全问题。
+
+### P2：有余力再深入
+
+- 多 Agent 的职责拆分与通信；
+- 规划器/执行器/审核器模式；
+- 长期记忆与记忆检索；
+- 模型路由、降级和成本优化；
+- 多模态视频理解与时间戳对齐；
+- 容器化、GPU 推理、生产部署和可观测性。
+
+---
+
+## 16. 当前代码的工程不足：面试中要会客观复盘
+
+下面不是否定项目，而是下一步成长点。
+
+| 问题 | 当前表现 | 更成熟的方向 |
+|---|---|---|
+| 文档版本漂移 | 实际 Tag/Web 为 v1.8，部分文档和 CLI 仍写 v1.7/v0.5 | 单一版本源、发布 Checklist、CI 校验版本 |
+| 确认协议较脆弱 | 依赖字符串、正则和模型再次生成参数 | 后端保存 plan，返回 `plan_id`，确认接口直接 apply |
+| 历史不完全一致 | 网页历史持久化，但模型 history 不从旧会话恢复 | 会话存储统一，按会话重建模型上下文 |
+| 全局 Agent 单例 | 所有 Web 请求共享一个 `_agent` | 每个会话独立 Agent/上下文，或无状态 Runtime |
+| 全局布尔锁 | 单进程 Demo 可用，多用户/多进程不安全 | 会话锁、队列、Redis 分布式锁 |
+| 假进度感 | 有 job API，但聊天请求仍同步阻塞 | 后台任务 + 持久化状态 + SSE/WebSocket |
+| 工具结果不够结构化 | 多数工具返回包含 JSON 的长字符串 | 统一 `ToolResult` 对象：status/data/error/user_message |
+| 工具执行无超时 | FFmpeg 可能长期卡住 | timeout、取消、子进程回收、重试策略 |
+| 路由靠关键词 | “怎么剪”分支可能漏识别 | 结构化意图分类或统一 Router |
+| 时间轴未闭环 | 入点/出点不触发剪辑 | 将范围提交为 plan，进入同一确认协议 |
+| 帧步长不准确 | 固定假设 30fps | ffprobe 获取 fps，明确 VFR 近似语义 |
+| 测试覆盖有限 | 11 个单测，缺少真实 Agent/API/FFmpeg 闭环 | Mock 模型测试、API 测试、样本视频端到端测试、Eval 集 |
+| 可观测性不足 | 主要使用 `print` | 结构化日志、request/session/tool id、耗时和错误指标 |
+| 多租户与鉴权缺失 | 本地单用户，无登录和隔离 | 用户鉴权、目录/数据隔离、配额与审计 |
+
+实习面试中，优秀回答通常包含“我做了什么、为什么这样做、哪里还不够、下一步如何验证”，而不是只报技术名词。
+
+---
+
+## 17. 今天应该能回答的面试题
+
+### 问题 1：这个项目为什么叫 Agent，而不是普通大模型应用？
+
+参考回答：
+
+> 它不仅生成文字，还通过 Gemini Function Calling 在一组受控视频工具中做决策。Python Runtime 执行具体工具，FFmpeg 产生真实文件，结果再返回给模型继续决策或回答。同时系统维护当前工作视频与对话状态，并对写操作加入人工确认，所以形成了完整的决策、行动、观察和反馈闭环。
+
+### 问题 2：为什么不让模型直接生成 FFmpeg 命令并执行？
+
+参考回答：
+
+> 任意命令执行会带来命令注入、路径越权、误删除和不可预测参数等风险。我把能力封装成白名单函数，模型只选择工具并填写 JSON 参数；后端再次做类型、范围、路径和确认校验，并用 subprocess 参数列表执行，不使用任意 shell 字符串。这样把 LLM 的灵活理解和确定性程序的安全执行分开。
+
+### 问题 3：怎样新增一个 Agent 工具？
+
+参考回答：
+
+> 先定义工具的业务语义和副作用，再在工具层实现并校验参数；然后写 Function Declaration/JSON Schema，让模型知道何时调用和怎样传参；加入白名单分发器；有编排规则时补 System Prompt；最后测试正常路径、非法参数、路径权限、确认前不写盘、确认后成功和失败回传。
+
+### 问题 4：确认机制如何工作？有什么不足？
+
+参考回答：
+
+> 写操作采用两阶段协议。首次 `confirmed=false` 只返回结构化 plan，Web 展示确认卡片；用户确认后模型以 `confirmed=true` 再调用工具。它将建议和执行分开。不过当前计划依赖模型上下文和字符串标记，参数可能在二次生成时漂移，下一步会改成后端保存 plan 并返回 `plan_id`，由确认接口直接执行原计划。
+
+### 问题 5：这个项目用了 RAG 或 MCP 吗？
+
+参考回答：
+
+> 没有。当前使用的是 Gemini SDK 的 Function Calling，自行实现 Agent 循环；视频分析通过 Gemini Files API 和结构化输出；没有向量检索链路，所以不是 RAG；工具也没有通过 MCP 协议暴露。后续如果需要接入外部素材库或跨客户端复用工具，才会评估 RAG 或 MCP。
+
+### 问题 6：v1.8 时间线与 Agent 是什么关系？
+
+参考回答：
+
+> v1.8 主要增强了确定性的前端交互，包括定位、近似逐帧、入点/出点和当前帧截取。截帧走普通 FastAPI 接口，不经过模型；入点/出点目前还只是浏览器状态，尚未接入 `trim_keep` 和确认协议。下一步可以把选区转换成结构化剪辑 plan，再让用户确认执行。
+
+---
+
+## 18. 今天的动手学习任务
+
+### 任务 A：画出并口述调用链
+
+不看本文，用纸画出：
+
+```text
+POST /api/chat
+→ VideoAgent.chat
+→ Gemini generate_content
+→ function_call
+→ run_tool
+→ trim_keep
+→ function_response
+→ Gemini 最终回答
+→ Web 确认卡片/刷新媒体状态
+```
+
+要求能解释每个箭头传递的是文字、结构化参数、工具结果还是文件状态。
+
+### 任务 B：直接调用工具，绕过模型
+
+在项目虚拟环境中进入 Python，尝试只调用读取工具：
+
+```python
+from tools import probe_video
+print(probe_video("samples/demo.mp4"))
+```
+
+然后调用写工具的计划阶段：
+
+```python
+from tools import trim_keep
+print(trim_keep(0, 3, path="samples/demo.mp4", confirmed=False))
+```
+
+观察 `output/`：此时不应新增成片。这个实验能证明工具本身与 LLM 解耦，模型只是一个调度者。
+
+### 任务 C：阅读三处源码
+
+今天只精读以下范围，不需要一次读完 2000 行 `tools.py`：
+
+1. `agent.py`：`_build_tools()` 和 `VideoAgent.chat()`；
+2. `tools.py`：`_pending()`、`_resolve_source()`、`trim_keep()`、`run_tool()`；
+3. `web_app.py`：`ChatRequest`、`api_chat()`、`api_capture_frame()`。
+
+每读一个函数，用自己的话回答：输入是什么、输出是什么、可能失败在哪里、是否有副作用。
+
+### 任务 D：运行现有测试
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+重点不是看到“通过”就结束，而是逐个说出它在防什么问题：文件名小数点、路径分隔符、待确认 JSON、非法时间段、中文路径、跨字幕块替换、预览路径越权、SRT 时间戳、水印区域和工作视频优先级。
+
+### 任务 E：写下自己的 30 秒项目介绍
+
+先不要照抄简历话术，按下面结构自己写一遍：
+
+```text
+用户痛点 → 你的解决方案 → Agent 核心链路 → 安全/可靠性设计 → 当前版本结果
 ```
 
 ---
 
-## 一、项目技术栈全景
+## 19. 今天可用于简历的表达，以及不能夸大的地方
 
-| 层级 | 用了什么 | 在本项目里干什么 |
-|------|----------|------------------|
-| 语言 | Python 3 | 全部业务逻辑 |
-| LLM | Google Gemini | 「脑子」：理解中文、决定调哪个工具 |
-| SDK | `google-genai` | 调用 Gemini、声明 tools、收发多轮对话 |
-| Web（v0.4+） | FastAPI + `static/` | 上传 / 对话 / 预览 / 多会话记录，复用同一套 Agent |
-| 配置 | `.env` + `python-dotenv` | 存放 API Key / 模型名（不写进代码） |
-| 视频 | FFmpeg（或 `imageio-ffmpeg` 自带） | 「手」：真正剪视频、读时长 |
-| 进程 | `subprocess` | 在 Python 里启动 FFmpeg 命令 |
-| 工程 | Git / GitHub | 版本管理与作品展示 |
+现阶段可以写：
 
-一句话：
+> 开发自然语言视频剪辑 Agent，基于 Gemini Function Calling 自研多轮工具调用循环，封装 15 个 FFmpeg/字幕/媒体管理工具；通过结构化 Tool Schema、路径白名单和两阶段人工确认控制文件副作用，并使用 FastAPI 实现本地 Web 交互、会话记录、视频预览与时间轴定位。
 
-> **Gemini = 调度员；`tools.py` = 工人；FFmpeg = 机器。**
+如果想写得更工程化：
 
----
+> 针对视频剪辑长耗时与不确定执行问题，设计“LLM 决策—白名单工具执行—结果回传—人工确认”闭环；实现快速切片失败后重编码降级、输出文件校验、视频分析缓存、网络/配额错误映射及关键安全边界测试。
 
-## 二、文件该怎么读（推荐顺序）
+当前不要写：
 
-按这个顺序读，每次只搞懂一个问题：
+- “实现了完整多轨视频编辑器”；
+- “支持精准逐帧编辑”；
+- “所有视频处理完全离线”；
+- “实现了 RAG/MCP/多 Agent”；
+- “支持高并发生产部署”；
+- “v1.8 已经用入点出点直接剪辑”。
 
-| 顺序 | 文件 | 你要搞懂的问题 |
-|------|------|----------------|
-| 1 | `main.py` | 程序从哪开始？用户输入怎么进 Agent？ |
-| 2 | `tools.py` 前半 | `probe_video` / `trim_keep` / `cut_out` / `add_text_overlay` 自己怎么干活？ |
-| 3 | `tools.py` 后半 | `TOOL_DECLARATIONS` 和 `run_tool` 是什么关系？ |
-| 4 | `agent.py` 的 `chat()` | 模型如何「想调工具 → 你执行 → 再问模型」？ |
-| 5 | `ffmpeg_bin.py` | 为什么找不到系统 FFmpeg 也能跑？ |
-| 6 | `web_app.py` + `static/` | Web 如何复用 Agent？确认按钮 / 成片列表 / 多会话 history？ |
-| 7 | `HANDOFF.md` + `PROBLEMS.md` | 工程约定与常见坑（代理、缓存、文件名） |
-| 8 | `.env.example` | 哪些配置影响线上行为？ |
+简历最忌讳的不是项目小，而是被追问后发现技术名词与实际代码不一致。能准确讲清一个小型闭环，比堆很多没实现的名词更有竞争力。
 
 ---
 
-## 三、Agent 开发相关知识（本项目实际用到的）
-
-### 1. 什么是 Agent（面试版）
-
-- **Chatbot**：只回文字  
-- **Agent**：可以调用外部能力（查文件、剪视频、调 API）再基于结果回答  
-
-本项目 Agent 的能力边界由你注册的 **tools** 决定。
-
-### 2. Tool Calling / Function Calling（核心中的核心）
-
-流程：
-
-1. 你把工具说明书（名字、描述、参数 JSON Schema）交给模型  
-2. 用户说「去掉前 5 秒」  
-3. 模型不直接剪视频，而是返回：`trim_keep(start=5, end=83.7, confirmed=false)`  
-4. **你的代码**执行这个函数  
-5. 把结果再喂回模型  
-6. 模型组织中文答复  
-
-对应代码：
-
-- 说明书：`tools.py` → `TOOL_DECLARATIONS`  
-- 执行器：`tools.py` → `run_tool()`  
-- 循环：`agent.py` → `VideoAgent.chat()`
-
-### 3. System Prompt（系统提示词）
-
-`agent.py` 里的 `SYSTEM_PROMPT` 告诉模型：
-
-- 你是谁（视频切片助手）  
-- 工具该怎么组合（先 probe 再 trim）  
-- 安全规则（先 confirmed=false）  
-
-改提示词会显著改变 Agent 行为——这是 Agent 工程的基本功。
-
-### 4. 多轮对话 / 历史（History）
-
-`self.history` 保存：
-
-- 用户消息  
-- 模型回复（可能含 function_call）  
-- 工具结果（function_response）  
-
-没有历史，模型就不知道「刚才已经 probe 过时长了」。
-
-### 5. 人机确认（Human-in-the-loop）
-
-写磁盘前先预览：
-
-- `confirmed=False` → 只返回计划  
-- 用户说确认 → `confirmed=True` → 真执行  
-
-工业项目里对应：审批流、草稿会话（如 OpenChatCut 的 edit session）。
-
-### 6. 错误与配额（工程现实）
-
-你已经遇到过：
-
-| 现象 | 含义 |
-|------|------|
-| 连接被拒绝 / 卡住 | 网络到不了 Google（要 VPN/代理） |
-| 429 | 免费额度用尽，换模型或等刷新 |
-| 503 | 服务端繁忙，稍后重试 |
-
-Agent 开发不只写 happy path，还要会提示用户怎么恢复。
-
-### 7. 与 OpenChatCut 的知识映射
-
-| 本项目 | OpenChatCut（工业版） |
-|--------|----------------------|
-| `trim_keep` | 时间线 `split` / `srcInFrame` 等命令 |
-| `TOOL_DECLARATIONS` | Agent / MCP 工具集 |
-| `confirmed` | 草稿 → 审阅 → 应用 |
-| `output/*.mp4` | 工程状态 + 导出 |
-| 命令行 | 完整 GUI + Remotion 预览 |
-
-先掌握左边，再学右边会轻松很多。
-
----
-
-## 四、你需要学会的 Python（按优先级）
-
-### P0：必须会（否则读不懂本项目）
-
-1. **基础语法**  
-   变量、`if/for/while`、函数 `def`、`return`、字符串 f-string  
-
-2. **类型标注（能看懂即可）**  
-   ```python
-   def trim_keep(start_sec: float, confirmed: bool = False) -> str:
-   ```  
-   表示参数/返回值类型，方便读代码和 IDE 提示。  
-
-3. **字典 `dict` 与 JSON**  
-   - `info = {"path": ..., "duration_sec": ...}`  
-   - `json.dumps` / `json.loads`  
-   Agent 传参、存计划几乎全是 JSON。  
-
-4. **列表 `list` 与推导式**  
-   ```python
-   decls = [types.FunctionDeclaration(...) for item in TOOL_DECLARATIONS]
-   ```  
-
-5. **`Path`（路径）** — `pathlib.Path`  
-   拼接路径、判断存在、列目录、删文件。本项目大量使用。  
-
-6. **异常处理**  
-   ```python
-   try:
-       ...
-   except Exception as e:
-       return f"失败: {e}"
-   ```  
-   工具函数里通常「返回错误字符串」而不是直接把程序打崩（方便模型继续对话）。  
-
-7. **模块与导入**  
-   `from tools import run_tool`、`if __name__ == "__main__"`  
-
-8. **虚拟环境与 pip**  
-   `python -m venv .venv`、`pip install -r requirements.txt`  
-
-### P1：本项目重度使用（第二周吃透）
-
-9. **`os.getenv` + dotenv**  
-   从环境变量读密钥，避免硬编码。  
-
-10. **`subprocess.run`**  
-    调用外部程序（FFmpeg）。注意参数用列表，不要把用户输入直接拼进 shell。  
-
-11. **正则 `re.search`**  
-    从 FFmpeg 输出文本里抠出 `Duration: 00:01:23.70`。  
-
-12. **类 `class`**  
-    `VideoAgent`：把 client、history、tools 封装在一起。  
-    要会：`__init__`、实例属性 `self.xxx`、实例方法。  
-
-13. **类型联合与 Optional**  
-    `path: str | None = None` 表示「可以不传」。  
-
-14. **装饰器入门（能认即可）**  
-    `@lru_cache`：缓存 `get_ffmpeg()` 结果，避免重复查找。  
-
-### P2：扩展功能时再学
-
-15. argparse / Typer（做更好的命令行）  
-16. FastAPI（做成网页/API Agent）  
-17. asyncio（并发、流式输出）  
-18. 单元测试（当前使用 `unittest discover -s tests`，覆盖文件名、确认机制、路径与时间参数）
-19. 日志 `logging`（代替到处 `print`）  
-
----
-
-## 五、对照源码的「精读作业」
-
-### 作业 A（1 天）：跑通并口述
-
-打开终端跑一遍「去掉前 5 秒 → 确认」，然后用自己的话讲：
-
-1. 哪一次请求后出现了 `[tool] probe_video` 或 `trim_keep`？  
-2. 为什么第一次 `confirmed` 是 false？  
-3. 文件最终出现在哪个目录？  
-
-### 作业 B（2 天）：改提示词
-
-只改 `SYSTEM_PROMPT`：要求模型回答时必须带上「预计导出秒数」。  
-观察行为变化——体会提示词工程。  
-
-### 作业 C（3 天）：加一个小工具
-
-例如给成片加淡入淡出、或「记住上一份文字计划方便改字号」。  
-
-（v0.3 已内置 `cut_out` / `concat_videos` / `export_preview_frame` / `mute_audio` / `change_speed`，可对照源码看「加工具」怎么落地。）
-
-步骤固定：
-
-1. 在 `tools.py` 写 Python 函数  
-2. 写入 `TOOL_DECLARATIONS`  
-3. 在 `run_tool` 里分发  
-4. 必要时改 `SYSTEM_PROMPT` 教模型何时调用  
-
-**扩展 Agent = 加工具**，这是实习里最常见的活。  
-
-### 作业 D（选做）：默写 Agent 循环伪代码
-
-不看代码，写出：
-
-```text
-history.append(用户)
-loop:
-  response = 调用模型(history, tools)
-  history.append(response)
-  if 没有 function_call:
-    return 文字
-  执行每个 tool
-  history.append(tool结果)
-```
-
-能默写，面试基本过关。  
-
----
-
-## 六、建议学习日程（两周）
-
-| 天数 | 学什么 | 产出 |
-|------|--------|------|
-| D1 | Python 函数/字典/Path + 读 `main.py` | 能解释程序入口 |
-| D2 | 读懂 `probe_video` + 自己在 Python 里 `print(probe_video())` | 不经过模型也能测工具 |
-| D3 | 读懂 `trim_keep` + FFmpeg 命令在干什么 | 知道 `-ss` `-t` `-c copy` |
-| D4–D5 | 精读 `VideoAgent.chat` | 画出工具调用时序图 |
-| D6 | System Prompt / confirmed 机制 | 能讲 Human-in-the-loop |
-| D7 | 429/503/代理 | 能讲线上排障 |
-| D8–D10 | 自己加 1 个新工具并提交 GitHub | 简历可写「独立扩展」 |
-| D11–D14 | 看 OpenChatCut 的 tools 列表，对比差异 | 为面试准备「进阶认知」 |
-
----
-
-## 七、面试可以怎么说（基于本项目）
-
-> 我做了一个自然语言视频剪辑 Agent（CLI + 本地 Web）。使用 Gemini Function Calling：模型根据工具描述选择 `probe_video` / `trim_keep` 等，实际剪辑由 Python 调用 FFmpeg 完成。对写操作实现了确认机制，避免模型直接改文件。v0.4 用 FastAPI 做了上传与页内预览，工具层仍复用同一套。项目开源在 GitHub。
-
-准备好被追问：
-
-1. 为什么不让模型直接生成 FFmpeg 命令字符串执行？（安全：注入/乱删文件）  
-2. `confirmed` 解决什么问题？  
-3. 如何新增一个工具？  
-
----
-
-## 八、推荐课外资料（少而精）
-
-1. Google AI：Gemini Function Calling 官方文档（对照 `google-genai`）  
-2. FFmpeg 官方文档：`-ss`、`-t`、`-c copy` 三节即可  
-3. Python 官方教程：`pathlib`、`subprocess` 两章  
-4. （进阶）OpenChatCut README：Agent-native 编辑思路  
-
----
-
-## 九、你现在的掌握标准（Checklist）
-
-- [ ] 能不看文档说出 Agent 与 Chatbot 的区别  
-- [ ] 能指着 `chat()` 讲清一轮工具调用  
-- [ ] 能独立改 `SYSTEM_PROMPT` 并验证效果  
-- [ ] 能新增一个 tool 并跑通  
-- [ ] 能解释 429/503 与 VPN 问题  
-- [ ] 能用 30 秒介绍 GitHub 仓库  
-
-全部勾完，你就具备投 Agent 实习的**最小完整项目经验**；之后再学框架（LangChain / 自研 runtime）会快很多。
+## 20. Day 1 自测清单
+
+- [ ] 我能说清 Agent 与 Chatbot 的区别。
+- [ ] 我知道 Gemini 负责决策，FFmpeg 负责真正处理视频。
+- [ ] 我能解释 Tool 实现、Tool Schema、Dispatcher 三层分别做什么。
+- [ ] 我能从 `VideoAgent.chat()` 讲出一次 Function Call 和 Function Response。
+- [ ] 我能解释为什么 Prompt 不能代替代码安全校验。
+- [ ] 我能解释 `confirmed=false/true` 的两阶段协议。
+- [ ] 我能区分模型 history、网页聊天记录、工作视频状态和任务缓存。
+- [ ] 我知道视频分析分支会把视频上传到 Gemini。
+- [ ] 我知道 v1.8 的入点/出点尚未接入实际剪辑。
+- [ ] 我能指出当前确认协议、全局锁、同步任务或测试覆盖中的至少 3 个不足。
+- [ ] 我能不看文档，用 30 秒介绍项目。
+
+如果还不能全部勾上，不需要急着学 LangChain。先沿着真实源码把今天的最小 Agent 闭环讲顺，这是后面学习任何 Agent 框架最扎实的基础。
