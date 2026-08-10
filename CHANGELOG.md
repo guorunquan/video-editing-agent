@@ -19,6 +19,23 @@ Tags：https://github.com/guorunquan/video-editing-agent/tags
 
 ---
 
+## [1.8.0] - 2026-08-10
+
+### Added
+- Web 播放器显示当前时间和总时长，支持拖动进度条和时间输入跳转。
+- 支持前进/后退 1 秒、逐帧前进/后退、设置入点和出点。
+- 支持从当前播放位置截取 PNG 帧，并保存到 `output/previews`。
+- 成片列表和截帧预览支持独立打开和管理。
+
+### Changed
+- Web 播放器、时间定位和媒体管理形成 v1.8 的精确剪辑工作台。
+- 健康检查、Web 页面和静态资源版本统一为 `1.8.0`。
+
+### Documentation
+- README、USAGE、HANDOFF、总体目标和需求分析同步到 v1.8。
+
+---
+
 ## [1.7.0] - 2026-08-05
 
 ### Fixed
