@@ -13,7 +13,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from tools import TOOL_DECLARATIONS, _resolve_source, run_tool
+from tools import TOOL_DECLARATIONS, _resolve_source, render_edit_plan, run_tool
 from video_analysis import analyze_video
 
 SYSTEM_PROMPT = """
@@ -123,23 +123,58 @@ class VideoAgent:
         # 最近一次 chat 是否进入「待确认」状态（工具结果含【待确认】）
         self.last_needs_confirm = False
         self.last_confirmation: dict[str, Any] | None = None
+        # v1.9: plans stay structured until the user explicitly chooses one.
+        self.last_analysis: dict[str, Any] | None = None
+        self.last_analysis_source: str | None = None
+        self.last_analysis_for_response: dict[str, Any] | None = None
+        self.pending_selected_plan: dict[str, Any] | None = None
+
+    def clear_context(self) -> None:
+        self.history.clear()
+        self.last_analysis = None
+        self.last_analysis_source = None
+        self.last_analysis_for_response = None
+        self.pending_selected_plan = None
 
     def chat(self, user_text: str) -> str:
         self.last_needs_confirm = False
         self.last_confirmation = None
+        self.last_analysis_for_response = None
         self.history.append(
             types.Content(role="user", parts=[types.Part(text=user_text)])
         )
+
+        if self.pending_selected_plan:
+            if self._is_cancel_request(user_text):
+                self.pending_selected_plan = None
+                return "已取消 AI 剪辑草案，原视频和已有成片都没有被修改。"
+            if self._is_confirm_request(user_text):
+                pending = self.pending_selected_plan
+                self.pending_selected_plan = None
+                result = render_edit_plan(**pending, confirmed=True)
+                self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
+                return result
 
         if self._looks_like_analysis_request(user_text):
             force = any(key in user_text for key in ("重新分析", "再分析", "刷新分析"))
             try:
                 video = _resolve_source(None, prefer_latest_output=False)
-                result = analyze_video(self.client, self.model, video, force=force)
+                result, analysis = analyze_video(
+                    self.client, self.model, video, force=force, include_data=True
+                )
+                self.last_analysis = analysis
+                self.last_analysis_source = str(video)
+                # The API returns this separately so the web UI does not have to
+                # scrape model prose to render plan cards.
+                self.last_analysis_for_response = analysis
             except Exception as exc:  # noqa: BLE001
                 result = f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}"
             self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
             return result
+
+        selected = self._selected_plan_number(user_text)
+        if selected is not None:
+            return self._prepare_selected_plan(selected)
 
         # 复杂的批量字幕/剪辑请求可能包含多个工具调用，给模型足够的编排轮次。
         for round_i in range(12):
@@ -238,6 +273,51 @@ class VideoAgent:
             key in raw
             for key in ("怎么剪", "如何剪", "剪辑建议", "剪辑方案", "怎么编辑", "适合怎么剪")
         )
+
+    @staticmethod
+    def _selected_plan_number(text: str) -> int | None:
+        match = re.search(
+            r"(?:采用|采纳|选择|选用|使用)\s*(?:(?:第\s*)?([1-3])\s*(?:个\s*)?方案|方案\s*(?:第\s*)?([1-3]))",
+            (text or "").strip(),
+        )
+        return int(match.group(1) or match.group(2)) if match else None
+
+    def _prepare_selected_plan(self, number: int) -> str:
+        if not self.last_analysis or not self.last_analysis_source:
+            return "还没有可采用的剪辑方案。请先说「分析一下这个视频，给我剪辑建议」。"
+        recommendations = self.last_analysis.get("recommendations") or []
+        if number < 1 or number > len(recommendations):
+            return f"方案 {number} 不存在。请在当前分析结果的有效方案中选择。"
+        plan = recommendations[number - 1]
+        pending = {
+            "segments": plan.get("segments") or [],
+            "path": self.last_analysis_source,
+            "plan_id": str(plan.get("id") or f"plan-{number}"),
+            "title": str(plan.get("title") or f"方案 {number}"),
+        }
+        result = render_edit_plan(
+            **pending,
+            confirmed=False,
+        )
+        marker = re.search(r"__VIDEO_AGENT_PENDING__(\{[^\n]*\})", result)
+        if marker:
+            try:
+                self.last_confirmation = json.loads(marker.group(1))
+                self.last_needs_confirm = True
+                self.pending_selected_plan = pending
+            except json.JSONDecodeError:
+                pass
+        self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
+        return result
+
+    @staticmethod
+    def _is_confirm_request(text: str) -> bool:
+        return (text or "").strip().lower() in {"确认", "确认执行", "同意", "执行", "confirm", "yes"}
+
+    @staticmethod
+    def _is_cancel_request(text: str) -> bool:
+        raw = (text or "").strip().lower()
+        return raw in {"取消", "不要执行", "先别改", "cancel", "no"}
 
 
 def load_settings() -> tuple[str, str]:

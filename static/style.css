@@ -1051,6 +1051,51 @@ body {
   }
 }
 
+.plan-card {
+  margin: 0 2px 12px;
+  border: 1px solid rgba(57, 149, 137, 0.35);
+  border-radius: 14px;
+  background: rgba(237, 251, 248, 0.82);
+  overflow: hidden;
+  box-shadow: 0 8px 22px rgba(18, 83, 75, 0.08);
+}
+
+.plan-card-title {
+  margin: 0;
+  padding: 11px 13px;
+  font-weight: 700;
+  color: #145e55;
+  background: rgba(57, 149, 137, 0.09);
+}
+
+.plan-option {
+  padding: 12px 13px;
+  border-top: 1px solid rgba(57, 149, 137, 0.18);
+}
+
+.plan-option strong,
+.plan-option p,
+.plan-option small {
+  display: block;
+}
+
+.plan-option p {
+  margin: 5px 0;
+  color: #405653;
+  font-size: 0.88rem;
+}
+
+.plan-option small {
+  color: #637775;
+  line-height: 1.4;
+}
+
+.plan-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 @media (max-width: 900px) {
   body {
     overflow-y: auto;

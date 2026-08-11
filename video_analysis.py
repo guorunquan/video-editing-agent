@@ -89,6 +89,120 @@ def _extract_json(text: str) -> dict[str, Any]:
         return {"raw": raw}
 
 
+STRATEGY_ORDER = ("retention_short", "information_complete", "story_paced")
+STRATEGY_LABELS = {
+    "retention_short": "高完播率短版",
+    "information_complete": "信息完整版本",
+    "story_paced": "轻松故事节奏版",
+}
+
+
+def _number(value: Any) -> float | None:
+    """Return a finite timestamp, or None for invalid model output."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 and parsed < float("inf") else None
+
+
+def _normalise_range_list(items: Any, duration: float | None) -> list[dict[str, Any]]:
+    """Validate timestamp ranges before exposing them to a draft or renderer."""
+    if not isinstance(items, list):
+        return []
+    ranges: list[dict[str, Any]] = []
+    for item in items[:30]:
+        if not isinstance(item, dict):
+            continue
+        start = _number(item.get("start_sec"))
+        end = _number(item.get("end_sec"))
+        if start is None or end is None or end <= start:
+            continue
+        if duration is not None and (start >= duration or end > duration + 0.05):
+            continue
+        evidence = str(item.get("evidence") or item.get("reason") or "未提供证据")[:300]
+        normalised = {
+            "start_sec": round(start, 3),
+            "end_sec": round(min(end, duration) if duration is not None else end, 3),
+            "reason": str(item.get("reason") or evidence)[:300],
+            "evidence": evidence,
+        }
+        if item.get("kind"):
+            normalised["kind"] = str(item["kind"])[:80]
+        confidence = _number(item.get("confidence"))
+        if confidence is not None:
+            normalised["confidence"] = min(1.0, max(0.0, confidence))
+        ranges.append(normalised)
+    return ranges
+
+
+def validate_analysis(result: dict[str, Any], duration: float | None, cache_key: str) -> dict[str, Any]:
+    """Make the VLM response safe and stable enough to become an editable draft.
+
+    The model may still describe a useful observation in prose, but malformed,
+    overlapping, or out-of-range edits never reach the execution layer.
+    """
+    if "raw" in result:
+        return result
+    observations = _normalise_range_list(result.get("observations"), duration)
+    recommendations: list[dict[str, Any]] = []
+    seen_strategies: set[str] = set()
+    for index, rec in enumerate((result.get("recommendations") or [])[:3]):
+        if not isinstance(rec, dict):
+            continue
+        segments = _normalise_range_list(rec.get("segments"), duration)
+        if not segments:
+            continue
+        segments.sort(key=lambda item: (item["start_sec"], item["end_sec"]))
+        if any(current["start_sec"] < previous["end_sec"] for previous, current in zip(segments, segments[1:])):
+            continue
+        strategy = str(rec.get("strategy") or "").strip().lower()
+        if strategy not in STRATEGY_ORDER or strategy in seen_strategies:
+            strategy = next((item for item in STRATEGY_ORDER if item not in seen_strategies), None)
+        if strategy is None:
+            continue
+        seen_strategies.add(strategy)
+        calculated_duration = round(sum(item["end_sec"] - item["start_sec"] for item in segments), 3)
+        plan_seed = f"{cache_key}:{strategy}:{index}:{segments}"
+        recommendations.append(
+            {
+                "id": "plan-" + hashlib.sha256(plan_seed.encode("utf-8")).hexdigest()[:12],
+                "strategy": strategy,
+                "title": str(rec.get("title") or STRATEGY_LABELS[strategy])[:80],
+                "goal": str(rec.get("goal") or STRATEGY_LABELS[strategy])[:200],
+                "platform": str(rec.get("platform") or "短视频平台")[:80],
+                "segments": segments,
+                "remove": _normalise_range_list(rec.get("remove"), duration),
+                "estimated_duration_sec": calculated_duration,
+                "confidence": min(1.0, max(0.0, _number(rec.get("confidence")) or 0.0)),
+            }
+        )
+
+    limitations = [str(item)[:240] for item in (result.get("limitations") or []) if str(item).strip()][:8]
+    if len(recommendations) < 2:
+        limitations.append("模型未能生成足够的有效差异化方案；请重新分析，不要直接采用不完整结果。")
+    return {
+        "summary": str(result.get("summary") or "模型未能生成内容摘要")[:500],
+        "content_type": str(result.get("content_type") or "other")[:40],
+        "observations": observations,
+        "recommendations": recommendations,
+        "limitations": limitations,
+    }
+
+
+def _repair_prompt(meta: dict[str, Any], prior: dict[str, Any]) -> str:
+    """A targeted retry when the first response did not contain two valid plans."""
+    return (
+        "Return corrected strict JSON only. The previous analysis did not contain two valid, "
+        "meaningfully different editing plans. Create exactly 3 plans using the strategies "
+        "retention_short, information_complete, story_paced. Every plan needs non-overlapping "
+        "segments with start_sec/end_sec inside this video duration, a concrete reason tied to "
+        "observed audio or visuals, and a different goal. Do not invent timestamps. "
+        f"Video metadata: {json.dumps(meta, ensure_ascii=False)}. "
+        f"Previous JSON: {json.dumps(prior, ensure_ascii=False)}"
+    )
+
+
 def _local_transcript(video: Path) -> dict[str, Any]:
     """Use faster-whisper when explicitly installed/enabled; otherwise explain why."""
     if os.getenv("LOCAL_TRANSCRIBE", "0").strip().lower() not in {"1", "true", "yes"}:
@@ -141,7 +255,9 @@ def _prompt(meta: dict[str, Any], transcript: dict[str, Any]) -> str:
   "recommendations": [
     {{
       "title": "方案名称",
+      "strategy": "retention_short|information_complete|story_paced",
       "goal": "适合什么用途",
+      "platform": "适合的平台或场景",
       "segments": [{{"start_sec": 0, "end_sec": 5, "reason": "必须引用具体语音或画面证据"}}],
       "remove": [{{"start_sec": 5, "end_sec": 7, "reason": "必须说明删除依据"}}],
       "estimated_duration_sec": 5,
@@ -155,7 +271,7 @@ def _prompt(meta: dict[str, Any], transcript: dict[str, Any]) -> str:
 1. 每个时间段都必须有事实依据；无法确认就放入 limitations。
 2. 不要只写“精彩、节奏好、适合传播”等空话。
 3. 快速动作、画面小字、低音量语音可能漏检，要诚实说明。
-4. 最多给 3 个方案，优先生成能映射到保留片段/删除片段的建议。
+4. 必须给出恰好 3 个实质不同的方案，strategy 依次使用 retention_short、information_complete、story_paced；优先生成能映射到保留片段/删除片段的建议。
 """.strip()
 
 
@@ -212,7 +328,14 @@ def _format_result(result: dict[str, Any], source: Path, transcript: dict[str, A
     return "\n".join(lines)
 
 
-def analyze_video(client: Any, model: str, video: Path, *, force: bool = False) -> str:
+def analyze_video(
+    client: Any,
+    model: str,
+    video: Path,
+    *,
+    force: bool = False,
+    include_data: bool = False,
+) -> str | tuple[str, dict[str, Any]]:
     """Analyze one local video and return evidence-backed editing suggestions."""
     video = video.resolve()
     if not video.exists() or not video.is_file():
@@ -222,7 +345,16 @@ def analyze_video(client: Any, model: str, video: Path, *, force: bool = False) 
     cache = _load_cache()
     if not force and key in cache:
         cached = cache[key]
-        return _format_result(cached["analysis"], video, cached.get("transcript") or {})
+        analysis = validate_analysis(
+            cached.get("analysis") or {},
+            _number(_video_meta(video).get("duration_sec")),
+            key,
+        )
+        if analysis != cached.get("analysis"):
+            cached["analysis"] = analysis
+            _save_cache(cache)
+        formatted = _format_result(analysis, video, cached.get("transcript") or {})
+        return (formatted, analysis) if include_data else formatted
 
     meta = _video_meta(video)
     upload_video, staged_upload = _prepare_ascii_upload(video)
@@ -243,7 +375,24 @@ def analyze_video(client: Any, model: str, video: Path, *, force: bool = False) 
             contents=[uploaded, _prompt(meta, transcript)],
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
-        result = _extract_json(getattr(response, "text", "") or "")
+        result = validate_analysis(
+            _extract_json(getattr(response, "text", "") or ""),
+            _number(meta.get("duration_sec")),
+            key,
+        )
+        # A second, narrow request is much more reliable than quietly presenting
+        # one generic recommendation as if it were a choice.
+        if "raw" not in result and len(result.get("recommendations") or []) < 2:
+            retry = client.models.generate_content(
+                model=model,
+                contents=[uploaded, _repair_prompt(meta, result)],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            result = validate_analysis(
+                _extract_json(getattr(retry, "text", "") or ""),
+                _number(meta.get("duration_sec")),
+                key,
+            )
     except Exception as exc:  # noqa: BLE001
         return f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}"
 
@@ -252,4 +401,5 @@ def analyze_video(client: Any, model: str, video: Path, *, force: bool = False) 
 
     cache[key] = {"video": str(video), "analysis": result, "transcript": transcript, "created_at": time.time()}
     _save_cache(cache)
-    return _format_result(result, video, transcript)
+    formatted = _format_result(result, video, transcript)
+    return (formatted, result) if include_data else formatted

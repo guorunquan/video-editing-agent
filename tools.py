@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import re
@@ -701,6 +702,113 @@ def cut_out(
             "截一张预览图确认画面",
             "继续加标题或字幕",
         )
+    )
+
+
+def _plan_segments(segments: object, duration: float | None) -> list[dict]:
+    """Parse and strictly validate an Agent editing plan before FFmpeg sees it."""
+    raw = segments
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("segments 必须是 JSON 数组") from exc
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("至少需要一个保留片段")
+    if len(raw) > 30:
+        raise ValueError("单次最多渲染 30 个片段")
+    parsed: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("每个片段都必须包含 start_sec 和 end_sec")
+        try:
+            start = round(float(item.get("start_sec")), 3)
+            end = round(float(item.get("end_sec")), 3)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("片段时间必须是数字") from exc
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+            raise ValueError("需要满足 0 <= start_sec < end_sec")
+        if duration is not None and (start >= duration or end > float(duration) + 0.05):
+            raise ValueError(f"片段 {start}s ~ {end}s 超出视频时长 {duration}s")
+        parsed.append({
+            "start_sec": start,
+            "end_sec": min(end, float(duration)) if duration is not None else end,
+            "reason": str(item.get("reason") or "未提供证据")[:300],
+        })
+    # The plan is deliberately ordered. Sorting would hide an accidental
+    # reordering from the user, so reject it instead.
+    if any(current["start_sec"] < previous["end_sec"] for previous, current in zip(parsed, parsed[1:])):
+        raise ValueError("保留片段必须按原视频时间顺序排列且不能重叠")
+    return parsed
+
+
+def render_edit_plan(
+    segments: object,
+    path: str | None = None,
+    plan_id: str | None = None,
+    title: str | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Render ordered source-video segments as one precise, confirmed draft."""
+    try:
+        video = _resolve_source(path, prefer_latest_output=False)
+    except FileNotFoundError as exc:
+        return str(exc)
+    meta = _video_meta(video)
+    try:
+        kept = _plan_segments(segments, meta.get("duration_sec"))
+    except ValueError as exc:
+        return f"错误：剪辑草案无效：{exc}"
+
+    estimated = round(sum(item["end_sec"] - item["start_sec"] for item in kept), 3)
+    plan = {
+        "action": "render_edit_plan",
+        "plan_id": str(plan_id or "manual-plan")[:80],
+        "title": str(title or "AI 剪辑草案")[:120],
+        "input": str(video),
+        "segments": kept,
+        "estimated_duration_sec": estimated,
+        "segment_count": len(kept),
+        "note": "仅保留列出的片段并按原顺序精确拼接；原文件不会被修改。",
+    }
+    segment_lines = "\n".join(
+        f"  {index}. {item['start_sec']}s ~ {item['end_sec']}s（{item['reason']}）"
+        for index, item in enumerate(kept, 1)
+    )
+    summary = (
+        f"将采用「{plan['title']}」，保留 {len(kept)} 段，预计成片 {estimated} 秒。\n"
+        f"源文件：{video.name}\n保留片段：\n{segment_lines}"
+    )
+    if not confirmed:
+        return _pending("AI 剪辑草案", summary, plan, "render_edit_plan")
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out = OUTPUT_DIR / f"plan_{len(kept)}_{_stamp()}.mp4"
+    ffmpeg = get_ffmpeg()
+    has_audio = bool(meta.get("has_audio"))
+    filters: list[str] = []
+    for index, item in enumerate(kept):
+        start, end = item["start_sec"], item["end_sec"]
+        filters.append(f"[0:v]trim={start}:{end},setpts=PTS-STARTPTS[v{index}]")
+        if has_audio:
+            filters.append(f"[0:a]atrim={start}:{end},asetpts=PTS-STARTPTS[a{index}]")
+    inputs = "".join(f"[v{index}][a{index}]" for index in range(len(kept))) if has_audio else "".join(
+        f"[v{index}]" for index in range(len(kept))
+    )
+    filters.append(f"{inputs}concat=n={len(kept)}:v=1:a={1 if has_audio else 0}[v]{'[a]' if has_audio else ''}")
+    cmd = [ffmpeg, "-y", "-i", str(video), "-filter_complex", ";".join(filters), "-map", "[v]"]
+    if has_audio:
+        cmd += ["-map", "[a]"]
+    cmd += ["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(out)]
+    proc = _run(cmd)
+    if not _encode_ok(out, proc):
+        return f"FFmpeg 剪辑草案渲染失败：\n{(proc.stderr or '')[-1000:]}"
+
+    _set_working_video(out)
+    result = {**plan, "output": str(out.resolve()), "output_mb": round(out.stat().st_size / (1024 * 1024), 2), "status": "ok"}
+    _save_job(result)
+    return "AI 剪辑草案已导出。\n" + json.dumps(result, ensure_ascii=False, indent=2) + _hint(
+        "打开成片检查切点", "继续添加字幕或文字"
     )
 
 
@@ -1712,6 +1820,24 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "render_edit_plan",
+        "description": (
+            "按时间顺序精确拼接同一源视频中的多个保留片段，适合执行 AI 剪辑草案。"
+            "每段必须有 start_sec、end_sec 和 reason；先 confirmed=false 展示草案，确认后再导出。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "segments": {"type": "string", "description": "包含 start_sec/end_sec/reason 的 JSON 片段数组"},
+                "path": {"type": "string", "description": "源视频路径；省略则使用当前工作视频"},
+                "plan_id": {"type": "string", "description": "稳定的剪辑方案 ID"},
+                "title": {"type": "string", "description": "用户可见的方案名称"},
+                "confirmed": {"type": "boolean", "description": "false=展示待确认草案；true=渲染导出"},
+            },
+            "required": ["segments"],
+        },
+    },
+    {
         "name": "concat_videos",
         "description": (
             "按顺序拼接多段视频。"
@@ -1953,6 +2079,14 @@ def run_tool(name: str, args: dict) -> str:
             start_sec=args.get("start_sec", 0),
             end_sec=args.get("end_sec", 0),
             path=args.get("path"),
+            confirmed=bool(args.get("confirmed", False)),
+        )
+    if name == "render_edit_plan":
+        return render_edit_plan(
+            segments=args.get("segments"),
+            path=args.get("path"),
+            plan_id=args.get("plan_id"),
+            title=args.get("title"),
             confirmed=bool(args.get("confirmed", False)),
         )
     if name == "concat_videos":

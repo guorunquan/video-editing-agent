@@ -4,10 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools import _pending, _resolve_source, _srt_timestamp, _watermark_region, safe_output_stem, trim_keep
-from video_analysis import _extract_json, _prepare_ascii_upload
+from tools import _pending, _resolve_source, _srt_timestamp, _watermark_region, render_edit_plan, safe_output_stem, trim_keep
+from video_analysis import _extract_json, _prepare_ascii_upload, validate_analysis
 from tools import _replace_subtitle_pairs
 from fastapi import HTTPException
+from agent import VideoAgent
 from web_app import _preview_file
 
 
@@ -39,6 +40,88 @@ class V1SafetyTests(unittest.TestCase):
     def test_analysis_json_accepts_code_fence(self):
         result = _extract_json('```json\n{"summary":"demo","recommendations":[]}\n```')
         self.assertEqual(result["summary"], "demo")
+
+    def test_analysis_plans_are_normalized_and_get_stable_ids(self):
+        raw = {
+            "summary": "demo",
+            "recommendations": [
+                {
+                    "strategy": "retention_short",
+                    "title": "short",
+                    "segments": [{"start_sec": 0, "end_sec": 2, "reason": "opening"}],
+                    "estimated_duration_sec": 999,
+                },
+                {
+                    "strategy": "information_complete",
+                    "title": "complete",
+                    "segments": [{"start_sec": 2, "end_sec": 5, "reason": "key point"}],
+                },
+            ],
+        }
+        result = validate_analysis(raw, 10, "video-key")
+        self.assertEqual(len(result["recommendations"]), 2)
+        self.assertTrue(result["recommendations"][0]["id"].startswith("plan-"))
+        self.assertEqual(result["recommendations"][0]["estimated_duration_sec"], 2.0)
+
+    def test_analysis_rejects_overlapping_or_out_of_range_segments(self):
+        raw = {
+            "recommendations": [
+                {
+                    "strategy": "retention_short",
+                    "segments": [
+                        {"start_sec": 0, "end_sec": 3, "reason": "a"},
+                        {"start_sec": 2, "end_sec": 4, "reason": "b"},
+                    ],
+                },
+                {
+                    "strategy": "information_complete",
+                    "segments": [{"start_sec": 9, "end_sec": 11, "reason": "outside"}],
+                },
+            ]
+        }
+        result = validate_analysis(raw, 10, "video-key")
+        self.assertEqual(result["recommendations"], [])
+        self.assertTrue(result["limitations"])
+
+    @patch("tools._video_meta", return_value={"duration_sec": 10, "has_audio": True})
+    @patch("tools._resolve_source", return_value=Path("source.mp4"))
+    def test_edit_plan_requires_confirmation_before_render(self, _source, _meta):
+        result = render_edit_plan(
+            segments=[{"start_sec": 0, "end_sec": 3, "reason": "opening"}],
+            confirmed=False,
+        )
+        marker = result.split("\n", 1)[0]
+        payload = json.loads(marker.removeprefix("__VIDEO_AGENT_PENDING__"))
+        self.assertEqual(payload["tool_name"], "render_edit_plan")
+        self.assertEqual(payload["plan"]["estimated_duration_sec"], 3.0)
+
+    @patch("agent.render_edit_plan")
+    def test_selected_plan_uses_deterministic_pending_then_confirm_flow(self, render):
+        render.side_effect = [
+            '__VIDEO_AGENT_PENDING__{"needs_confirm": true}\n【待确认】草案',
+            '{"status": "ok", "output": "output/plan.mp4"}',
+        ]
+        subject = VideoAgent.__new__(VideoAgent)
+        subject.history = []
+        subject.last_needs_confirm = False
+        subject.last_confirmation = None
+        subject.last_analysis_for_response = None
+        subject.last_analysis_source = "source.mp4"
+        subject.last_analysis = {
+            "recommendations": [
+                {"id": "plan-1", "title": "short", "segments": [{"start_sec": 0, "end_sec": 2}]}
+            ]
+        }
+        subject.pending_selected_plan = None
+
+        pending = subject.chat("采用方案 1")
+        self.assertIn("待确认", pending)
+        self.assertTrue(subject.last_needs_confirm)
+        self.assertTrue(subject.pending_selected_plan)
+        done = subject.chat("确认")
+        self.assertIn('"status": "ok"', done)
+        self.assertEqual(render.call_args_list[0].kwargs["confirmed"], False)
+        self.assertEqual(render.call_args_list[1].kwargs["confirmed"], True)
 
     def test_non_ascii_video_path_uses_temporary_ascii_copy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
