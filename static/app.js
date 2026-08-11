@@ -149,6 +149,57 @@
     if (btnReset) btnReset.disabled = next;
   }
 
+  function clearPlanCards() {
+    if (!messagesEl) return;
+    messagesEl.querySelectorAll(".plan-card").forEach((el) => el.remove());
+  }
+
+  function addPlanCards(analysis) {
+    const plans = Array.isArray(analysis?.recommendations) ? analysis.recommendations : [];
+    if (!messagesEl || !plans.length) return;
+    clearPlanCards();
+    const wrap = document.createElement("section");
+    wrap.className = "plan-card";
+    const heading = document.createElement("p");
+    heading.className = "plan-card-title";
+    heading.textContent = "选择一个 AI 剪辑草案";
+    wrap.appendChild(heading);
+    plans.forEach((plan, index) => {
+      const item = document.createElement("article");
+      item.className = "plan-option";
+      const name = document.createElement("strong");
+      name.textContent = `方案 ${index + 1} · ${plan.title || "未命名"}`;
+      const detail = document.createElement("p");
+      const duration = Number(plan.estimated_duration_sec || 0).toFixed(1);
+      detail.textContent = `${plan.goal || "未说明目标"} · 预计 ${duration}s · ${plan.platform || "短视频平台"}`;
+      const evidence = document.createElement("small");
+      const first = Array.isArray(plan.segments) ? plan.segments[0] : null;
+      evidence.textContent = first ? `起始证据 ${formatMediaTime(first.start_sec)}：${first.reason || "未提供"}` : "缺少可执行片段";
+      const actions = document.createElement("div");
+      actions.className = "plan-actions";
+      const jump = document.createElement("button");
+      jump.type = "button";
+      jump.className = "mini";
+      jump.textContent = "跳到首段";
+      jump.disabled = !first;
+      jump.addEventListener("click", () => {
+        if (!first) return;
+        seekTo(Number(first.start_sec));
+        player?.pause();
+      });
+      const use = document.createElement("button");
+      use.type = "button";
+      use.className = "mini primary-mini";
+      use.textContent = "采用此方案";
+      use.addEventListener("click", () => sendChat(`采用方案 ${index + 1}`));
+      actions.append(jump, use);
+      item.append(name, detail, evidence, actions);
+      wrap.appendChild(item);
+    });
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
   function clampTime(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 0;
@@ -833,6 +884,7 @@
     if (!message || busy) return;
 
     lastUserMessage = message;
+    clearPlanCards();
     if (!isRetry) addBubble(message, "user");
     else addBubble(`重试：${message}`, "system");
     if (input) input.value = "";
@@ -867,6 +919,7 @@
       }
       const reply = decorateReply(data.reply || "(无回复)");
       addBubble(reply, "assistant");
+      addPlanCards(data.analysis);
       if (looksLikeConfirm(reply, data.needs_confirm)) addConfirmCard(data.confirmation);
       else clearConfirmCards();
       currentPlayUrl = "";

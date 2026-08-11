@@ -486,7 +486,7 @@ _load_sessions()
 @app.get("/api/health")
 def health() -> dict:
     model = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    return {"ok": True, "version": "1.8.0", "model": model, "web_mode": True}
+    return {"ok": True, "version": "1.9.0", "model": model, "web_mode": True}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -511,7 +511,7 @@ def api_history(session_id: str | None = None) -> dict:
 def api_history_new() -> dict:
     """开新对话会话（旧会话保留，可在目录里回看）。"""
     agent = _get_agent()
-    agent.history.clear()
+    agent.clear_context()
     session = _start_new_session("新对话")
     note = "已开始新对话（历史会话仍可在「对话记录」里查看）"
     _append_chat("system", note)
@@ -582,7 +582,7 @@ def api_use_output(body: OutputUseRequest) -> dict:
     target = _output_file(body.name)
     set_working_video(target)
     agent = _get_agent()
-    agent.history.clear()
+    agent.clear_context()
     note = f"已将成片设为当前工作视频：{target.name}。现在可以直接继续剪辑。"
     _append_chat("system", note)
     return {
@@ -655,7 +655,7 @@ async def api_upload(file: UploadFile = File(...)) -> dict:
 
     video = set_working_video(dest)
     agent = _get_agent()
-    agent.history.clear()
+    agent.clear_context()
 
     note = f"已上传并设为当前工作视频：{video.name}"
     _append_chat("system", note)
@@ -771,6 +771,7 @@ def api_chat(body: ChatRequest) -> dict:
         "reply": reply,
         "needs_confirm": _needs_confirm(reply, agent),
         "confirmation": confirmation,
+        "analysis": getattr(agent, "last_analysis_for_response", None),
         "state": _enrich_state(),
         "history": _history_payload(),
     }
@@ -785,7 +786,7 @@ def api_download_output(name: str):
 def api_reset() -> dict:
     """清空当前模型上下文，并开启新会话（旧会话仍保留）。"""
     agent = _get_agent()
-    agent.history.clear()
+    agent.clear_context()
     _start_new_session("新对话")
     note = "已开启新对话（旧对话仍可在「对话记录」目录中查看；成片未删除）"
     _append_chat("system", note)
@@ -827,7 +828,7 @@ if __name__ == "__main__":
     host = (os.getenv("WEB_HOST") or "127.0.0.1").strip()
     port = int(os.getenv("WEB_PORT") or "7860")
     print("=" * 50)
-    print("灵剪 EditMate Web v1.8.0")
+    print("灵剪 EditMate Web v1.9.0")
     print(f"open: http://{host}:{port}")
     print("AI 视频理解 · 自动剪辑建议 · 字幕生成/批改 · 水印处理 · 成片管理")
     print("使用说明：USAGE.md | 支持直接上传视频或操作当前成片")
