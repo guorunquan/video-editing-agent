@@ -83,6 +83,24 @@ class V1SafetyTests(unittest.TestCase):
         self.assertEqual(result["recommendations"], [])
         self.assertTrue(result["limitations"])
 
+    def test_analysis_filters_plan_that_keeps_the_entire_video(self):
+        raw = {
+            "recommendations": [
+                {
+                    "strategy": "information_complete",
+                    "title": "完整保留",
+                    "segments": [{"start_sec": 0, "end_sec": 18, "reason": "什么都不删"}],
+                },
+                {
+                    "strategy": "retention_short",
+                    "title": "真正剪辑",
+                    "segments": [{"start_sec": 2, "end_sec": 12, "reason": "只保留高光"}],
+                },
+            ]
+        }
+        result = validate_analysis(raw, 18, "video-key")
+        self.assertEqual([plan["title"] for plan in result["recommendations"]], ["真正剪辑"])
+
     @patch("tools._video_meta", return_value={"duration_sec": 10, "has_audio": True})
     @patch("tools._resolve_source", return_value=Path("source.mp4"))
     def test_edit_plan_requires_confirmation_before_render(self, _source, _meta):
@@ -95,12 +113,11 @@ class V1SafetyTests(unittest.TestCase):
         self.assertEqual(payload["tool_name"], "render_edit_plan")
         self.assertEqual(payload["plan"]["estimated_duration_sec"], 3.0)
 
-    @patch("agent.render_edit_plan")
-    def test_selected_plan_uses_deterministic_pending_then_confirm_flow(self, render):
-        render.side_effect = [
-            '__VIDEO_AGENT_PENDING__{"needs_confirm": true}\n【待确认】草案',
-            '{"status": "ok", "output": "output/plan.mp4"}',
-        ]
+    @patch("agent.render_draft")
+    @patch("agent.create_draft")
+    def test_selected_plan_renders_preview_without_final_export(self, create, render):
+        create.return_value = {"id": "draft-12345678", "plan_id": "plan-1", "title": "short"}
+        render.return_value = {"path": "output/plan_previews/draft-12345678.mp4"}
         subject = VideoAgent.__new__(VideoAgent)
         subject.history = []
         subject.last_needs_confirm = False
@@ -113,15 +130,17 @@ class V1SafetyTests(unittest.TestCase):
             ]
         }
         subject.pending_selected_plan = None
+        subject.active_draft_id = None
+        subject.last_preview_path = None
+        subject.last_output_path = None
 
         pending = subject.chat("采用方案 1")
-        self.assertIn("待确认", pending)
-        self.assertTrue(subject.last_needs_confirm)
+        self.assertIn("视频预览", pending)
+        self.assertEqual(subject.active_draft_id, "draft-12345678")
         self.assertTrue(subject.pending_selected_plan)
-        done = subject.chat("确认")
-        self.assertIn('"status": "ok"', done)
-        self.assertEqual(render.call_args_list[0].kwargs["confirmed"], False)
-        self.assertEqual(render.call_args_list[1].kwargs["confirmed"], True)
+        create.assert_called_once()
+        render.assert_called_once_with("draft-12345678", preview=True)
+        self.assertEqual(subject.last_preview_path, "output/plan_previews/draft-12345678.mp4")
 
     def test_non_ascii_video_path_uses_temporary_ascii_copy(self):
         with tempfile.TemporaryDirectory() as temp_dir:

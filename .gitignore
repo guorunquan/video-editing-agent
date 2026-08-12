@@ -3,6 +3,9 @@ samples/*
 !samples/demo.mp4
 uploads/*
 !uploads/.gitkeep
+!uploads/music/
+uploads/music/*
+!uploads/music/.gitkeep
 output/*
 !output/.gitkeep
 data/
