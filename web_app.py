@@ -1,5 +1,5 @@
 """
-Mini Video Agent Web UI（v1.8）
+Mini Video Agent Web UI（v2.0）
 
 本地体验站：上传 → 对话剪辑 → 确认按钮 / 成片点选 / 多会话记录。
 复用 agent.py / tools.py。
@@ -32,6 +32,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent import VideoAgent, load_settings
+from editor_v2 import (
+    EFFECT_TYPES,
+    MUSIC_DIR,
+    MUSIC_SUFFIXES,
+    confirm_draft,
+    create_draft,
+    list_music,
+    load_draft,
+    render_draft,
+)
 from tools import (
     ROOT,
     _encode_ok,
@@ -71,7 +81,7 @@ SESSION_GAP_SEC = 3 * 3600  # 超过 3 小时无消息 → 自动新开会话
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 MEDIA_ROOTS = (UPLOAD_DIR, OUTPUT_DIR, SAMPLES_DIR)
 
-app = FastAPI(title="灵剪 EditMate", version="1.8.0")
+app = FastAPI(title="灵剪 EditMate", version="2.0.0")
 
 _agent: VideoAgent | None = None
 _chat_lock = False
@@ -371,6 +381,17 @@ def _enrich_state() -> dict:
     working = state.get("working_video")
     latest = state.get("latest_output")
     preview = state.get("latest_preview")
+    active_draft = None
+    if _agent and getattr(_agent, "active_draft_id", None):
+        try:
+            active_draft = load_draft(_agent.active_draft_id)
+            if active_draft.get("preview"):
+                active_draft["preview"] = {
+                    **active_draft["preview"],
+                    "url": _to_media_url(active_draft["preview"].get("path")),
+                }
+        except (ValueError, FileNotFoundError):
+            active_draft = None
     return {
         "working_video": (
             {**working, "url": _to_media_url(working["path"])} if working else None
@@ -386,6 +407,8 @@ def _enrich_state() -> dict:
         "outputs": [
             {**item, "url": _to_media_url(item["path"])} for item in state.get("outputs", [])
         ],
+        "music": list_music(),
+        "active_draft": active_draft,
         "previews": [
             {**item, "url": _to_media_url(item["path"])}
             for item in state.get("previews", [])
@@ -473,6 +496,18 @@ class HistorySelectRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=64)
 
 
+class PlanPreviewRequest(BaseModel):
+    plan_number: int = Field(..., ge=1, le=3)
+    music_name: str | None = Field(default="__auto__", max_length=240)
+    music_volume: float = Field(default=0.18, ge=0, le=1)
+    beat_sync: bool = True
+    effects: list[str] = Field(default_factory=list, max_length=10)
+
+
+class DraftConfirmRequest(BaseModel):
+    draft_id: str = Field(..., min_length=8, max_length=80)
+
+
 def _job_update(job_id: str, **values: object) -> dict:
     job = _job_state.setdefault(job_id, {"id": job_id})
     job.update(values)
@@ -486,7 +521,7 @@ _load_sessions()
 @app.get("/api/health")
 def health() -> dict:
     model = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    return {"ok": True, "version": "1.9.0", "model": model, "web_mode": True}
+    return {"ok": True, "version": "2.0.0", "model": model, "web_mode": True}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -670,6 +705,82 @@ async def api_upload(file: UploadFile = File(...)) -> dict:
     }
 
 
+@app.post("/api/music/upload")
+async def api_upload_music(file: UploadFile = File(...)) -> dict:
+    filename = file.filename or "music.mp3"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in MUSIC_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f"仅支持 {', '.join(sorted(MUSIC_SUFFIXES))} 配乐")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="空文件")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="配乐文件超过上传大小限制")
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    destination = MUSIC_DIR / f"{_safe_stem(filename)}_{uuid.uuid4().hex[:8]}{suffix}"
+    destination.write_bytes(data)
+    return {"ok": True, "message": f"已加入音乐库：{destination.name}", "state": _enrich_state()}
+
+
+@app.post("/api/plans/preview")
+def api_preview_plan(body: PlanPreviewRequest) -> dict:
+    agent = _get_agent()
+    analysis = getattr(agent, "last_analysis", None) or {}
+    source = getattr(agent, "last_analysis_source", None)
+    plans = analysis.get("recommendations") or []
+    if not source or body.plan_number > len(plans):
+        raise HTTPException(status_code=409, detail="请先分析当前视频，再选择方案预览")
+    invalid_effects = set(body.effects) - EFFECT_TYPES
+    if invalid_effects:
+        raise HTTPException(status_code=400, detail=f"不支持的特效：{', '.join(sorted(invalid_effects))}")
+    try:
+        draft = create_draft(
+            source,
+            plans[body.plan_number - 1],
+            music_name=body.music_name,
+            music_volume=body.music_volume,
+            beat_sync=body.beat_sync,
+            enabled_effects=body.effects,
+        )
+        agent.active_draft_id = draft["id"]
+        agent.pending_selected_plan = {"draft_id": draft["id"], "plan_id": draft["plan_id"]}
+        rendered = render_draft(draft["id"], preview=True)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "message": (
+            f"原清方案预览已生成，已配上「{(rendered['draft'].get('music') or {}).get('name')}」；"
+            if (rendered["draft"].get("music") or {}).get("name")
+            else "原清方案预览已生成；"
+        ) + "观看后可确认最终导出，或调整音乐/特效重新预览。",
+        "draft": rendered["draft"],
+        "preview_url": _to_media_url(rendered["path"]),
+        "cached": rendered["cached"],
+        "state": _enrich_state(),
+    }
+
+
+@app.post("/api/drafts/confirm")
+def api_confirm_draft(body: DraftConfirmRequest) -> dict:
+    agent = _get_agent()
+    if getattr(agent, "active_draft_id", None) != body.draft_id:
+        raise HTTPException(status_code=409, detail="只能确认当前正在预览的草稿")
+    try:
+        rendered = confirm_draft(body.draft_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    output = set_working_video(rendered["path"])
+    agent.pending_selected_plan = None
+    note = f"v2.0 成片已导出：{output.name}"
+    _append_chat("system", note)
+    return {"ok": True, "message": note, "output": rendered, "state": _enrich_state()}
+
+
 @app.post("/api/previews/capture")
 def api_capture_frame(body: FrameCaptureRequest) -> dict:
     """Capture the current timeline position and keep it in output/previews."""
@@ -766,13 +877,21 @@ def api_chat(body: ChatRequest) -> dict:
     _append_chat("assistant", reply)
     confirmation = getattr(agent, "last_confirmation", None)
     _job_update(job_id, status="completed", stage="完成", message="处理完成")
+    state = _enrich_state()
+    active_draft = state.get("active_draft") or {}
+    draft_preview = active_draft.get("preview") or {}
+    preview_url = draft_preview.get("url")
+    output_url = _to_media_url(getattr(agent, "last_output_path", None))
     return {
         "job_id": job_id,
         "reply": reply,
         "needs_confirm": _needs_confirm(reply, agent),
         "confirmation": confirmation,
         "analysis": getattr(agent, "last_analysis_for_response", None),
-        "state": _enrich_state(),
+        "state": state,
+        "preview_url": preview_url,
+        "output_url": output_url,
+        "active_draft": active_draft if preview_url else None,
         "history": _history_payload(),
     }
 
@@ -828,9 +947,9 @@ if __name__ == "__main__":
     host = (os.getenv("WEB_HOST") or "127.0.0.1").strip()
     port = int(os.getenv("WEB_PORT") or "7860")
     print("=" * 50)
-    print("灵剪 EditMate Web v1.9.0")
+    print("灵剪 EditMate Web v2.0.0")
     print(f"open: http://{host}:{port}")
-    print("AI 视频理解 · 自动剪辑建议 · 字幕生成/批改 · 水印处理 · 成片管理")
+    print("AI 多方案 · 视频预览后确认 · 配乐卡点 · 高光特效 · 成片管理")
     print("使用说明：USAGE.md | 支持直接上传视频或操作当前成片")
     print("=" * 50)
     uvicorn.run(app, host=host, port=port, reload=False)

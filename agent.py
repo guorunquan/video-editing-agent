@@ -13,7 +13,8 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from tools import TOOL_DECLARATIONS, _resolve_source, render_edit_plan, run_tool
+from tools import TOOL_DECLARATIONS, _resolve_source, _video_meta, run_tool, set_working_video
+from editor_v2 import confirm_draft, create_draft, render_draft, update_draft_music
 from video_analysis import analyze_video
 
 SYSTEM_PROMPT = """
@@ -55,7 +56,8 @@ SYSTEM_PROMPT = """
 15. 用户要求「切得更准」时给 trim_keep 加 precise=true。
 16. 用户取消待确认计划时，不要执行写操作。
 17. 用户问「怎么剪 / 如何剪 / 给剪辑建议」时，先完成视频分析，再根据带时间点的证据给建议；分析阶段不得自动修改文件。
-18. 用户说「采用方案 N」时，使用上一次分析结果中的时间段生成剪辑计划，仍须 confirmed=false 等待确认。
+18. 用户说「采用方案 N」时，先创建可预览草稿；用户必须看过视频预览后才能确认最终导出。
+19. “给原视频配乐/加 BGM/加背景乐”是混音请求，必须保留原声并混入配乐；绝对不得先调用 mute_audio。
 """.strip()
 
 
@@ -78,6 +80,10 @@ def _build_tools() -> list[types.Tool]:
             parameters=item.get("parameters"),
         )
         for item in TOOL_DECLARATIONS
+        # v2.0 plans must go through EditDraft -> preview -> confirm. Keeping the
+        # legacy renderer callable by Gemini lets phrases such as “看看方案三”
+        # bypass that safety and leaves the player on the source video.
+        if item["name"] != "render_edit_plan"
     ]
     return [types.Tool(function_declarations=decls)]
 
@@ -128,6 +134,9 @@ class VideoAgent:
         self.last_analysis_source: str | None = None
         self.last_analysis_for_response: dict[str, Any] | None = None
         self.pending_selected_plan: dict[str, Any] | None = None
+        self.active_draft_id: str | None = None
+        self.last_preview_path: str | None = None
+        self.last_output_path: str | None = None
 
     def clear_context(self) -> None:
         self.history.clear()
@@ -135,25 +144,37 @@ class VideoAgent:
         self.last_analysis_source = None
         self.last_analysis_for_response = None
         self.pending_selected_plan = None
+        self.active_draft_id = None
+        self.last_preview_path = None
+        self.last_output_path = None
 
     def chat(self, user_text: str) -> str:
         self.last_needs_confirm = False
         self.last_confirmation = None
         self.last_analysis_for_response = None
+        self.last_preview_path = None
+        self.last_output_path = None
         self.history.append(
             types.Content(role="user", parts=[types.Part(text=user_text)])
         )
 
-        if self.pending_selected_plan:
-            if self._is_cancel_request(user_text):
-                self.pending_selected_plan = None
-                return "已取消 AI 剪辑草案，原视频和已有成片都没有被修改。"
-            if self._is_confirm_request(user_text):
-                pending = self.pending_selected_plan
-                self.pending_selected_plan = None
-                result = render_edit_plan(**pending, confirmed=True)
-                self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
-                return result
+        if self.pending_selected_plan and self._is_cancel_request(user_text):
+            self.pending_selected_plan = None
+            self.active_draft_id = None
+            return "已取消 AI 剪辑草案，原视频和已有成片都没有被修改。"
+
+        if self.pending_selected_plan and self._is_confirm_request(user_text):
+            try:
+                rendered = confirm_draft(self.pending_selected_plan["draft_id"])
+                output = set_working_video(rendered["path"])
+            except Exception as exc:  # noqa: BLE001
+                return f"确认导出失败：{type(exc).__name__}: {str(exc)[:500]}"
+            self.pending_selected_plan = None
+            self.active_draft_id = None
+            self.last_output_path = str(output)
+            result = f"已确认并导出高清成片：{output.name}"
+            self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
+            return result
 
         if self._looks_like_analysis_request(user_text):
             force = any(key in user_text for key in ("重新分析", "再分析", "刷新分析"))
@@ -162,11 +183,12 @@ class VideoAgent:
                 result, analysis = analyze_video(
                     self.client, self.model, video, force=force, include_data=True
                 )
-                self.last_analysis = analysis
-                self.last_analysis_source = str(video)
-                # The API returns this separately so the web UI does not have to
-                # scrape model prose to render plan cards.
-                self.last_analysis_for_response = analysis
+                if analysis:
+                    self.last_analysis = analysis
+                    self.last_analysis_source = str(video)
+                    # The API returns this separately so the web UI does not have to
+                    # scrape model prose to render plan cards.
+                    self.last_analysis_for_response = analysis
             except Exception as exc:  # noqa: BLE001
                 result = f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}"
             self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
@@ -175,6 +197,12 @@ class VideoAgent:
         selected = self._selected_plan_number(user_text)
         if selected is not None:
             return self._prepare_selected_plan(selected)
+
+        if self.active_draft_id and self._looks_like_music_request(user_text):
+            return self._update_active_draft_music(user_text)
+
+        if self._looks_like_music_request(user_text):
+            return self._prepare_full_video_music(user_text)
 
         # 复杂的批量字幕/剪辑请求可能包含多个工具调用，给模型足够的编排轮次。
         for round_i in range(12):
@@ -276,11 +304,78 @@ class VideoAgent:
 
     @staticmethod
     def _selected_plan_number(text: str) -> int | None:
-        match = re.search(
-            r"(?:采用|采纳|选择|选用|使用)\s*(?:(?:第\s*)?([1-3])\s*(?:个\s*)?方案|方案\s*(?:第\s*)?([1-3]))",
-            (text or "").strip(),
+        raw = re.sub(r"\s+", "", (text or "").strip())
+        if "方案" not in raw:
+            return None
+        intent = r"(?:采用|采纳|选择|选用|使用|看看|查看|看一下|看下|预览|试播|播放|给|配乐|配上|加音乐|加配乐)"
+        number = r"([1-3一二三])"
+        patterns = (
+            rf"^方案(?:第)?{number}(?:个)?[!！。，,]?$",
+            rf"{intent}(?:(?:第)?{number}(?:个)?方案|方案(?:第)?{number})",
+            rf"方案(?:第)?{number}(?:看看|查看|看一下|看下|预览|试播|播放|采用|选择|配乐|配上|加音乐|加配乐)",
         )
-        return int(match.group(1) or match.group(2)) if match else None
+        match = next((candidate for pattern in patterns if (candidate := re.search(pattern, raw))), None)
+        if not match:
+            return None
+        token = next((group for group in match.groups() if group), "")
+        return {"一": 1, "二": 2, "三": 3}.get(token, int(token) if token.isdigit() else None)
+
+    @staticmethod
+    def _looks_like_music_request(text: str) -> bool:
+        raw = re.sub(r"\s+", "", (text or "").strip().lower())
+        return any(key in raw for key in ("配乐", "音乐", "bgm", "背景音", "背景乐")) and any(
+            key in raw for key in ("配", "加", "来一段", "换", "高燃", "电子", "bgm")
+        )
+
+    def _update_active_draft_music(self, user_text: str) -> str:
+        mood = "高燃电子" if any(key in user_text for key in ("高燃", "热血", "激燃", "电子")) else "与内容匹配"
+        try:
+            draft = update_draft_music(self.active_draft_id or "", mood=mood)
+            rendered = render_draft(draft["id"], preview=True)
+        except Exception as exc:  # noqa: BLE001
+            return f"配乐预览生成失败：{type(exc).__name__}: {str(exc)[:500]}"
+        self.pending_selected_plan = {"draft_id": draft["id"], "plan_id": draft["plan_id"]}
+        self.last_preview_path = rendered["path"]
+        music = rendered["draft"].get("music") or {}
+        result = (
+            f"已给当前方案配上「{music.get('name') or '自动匹配配乐'}」，"
+            "原清视频预览已重新生成并自动切换。\n"
+            "请直接播放试听；满意后回复“确认”导出。"
+        )
+        self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
+        return result
+
+    def _prepare_full_video_music(self, user_text: str) -> str:
+        mood = "高燃电子" if any(key in user_text for key in ("高燃", "热血", "激燃", "电子", "动感")) else "与内容匹配"
+        try:
+            source = _resolve_source(None, prefer_latest_output=False)
+            duration = float(_video_meta(source).get("duration_sec") or 0)
+            if duration <= 0:
+                raise ValueError("无法获取原视频时长")
+            plan = {
+                "id": "whole-video-soundtrack",
+                "title": "整段原视频高燃配乐",
+                "strategy": "soundtrack_only",
+                "segments": [{"start_sec": 0.0, "end_sec": duration, "reason": "保留整段画面与原声，只混入背景配乐"}],
+                "package": {"music_mood": mood, "music_volume": 0.38, "beat_sync": True},
+                "transition": {"type": "none", "duration_sec": 0},
+                "effects": [],
+            }
+            draft = create_draft(source, plan)
+            rendered = render_draft(draft["id"], preview=True)
+        except Exception as exc:  # noqa: BLE001
+            return f"整段配乐预览生成失败：{type(exc).__name__}: {str(exc)[:500]}"
+        self.active_draft_id = draft["id"]
+        self.pending_selected_plan = {"draft_id": draft["id"], "plan_id": draft["plan_id"]}
+        self.last_preview_path = rendered["path"]
+        music = rendered["draft"].get("music") or {}
+        result = (
+            f"已保留整段原视频的画面和原声，并混入「{music.get('name') or '自动配乐'}」（"
+            f"配乐音量 {round(float(music.get('volume', 0)) * 100)}%）。\n"
+            "原清预览已自动切换；满意后回复“确认”导出，不满意可返回原视频。"
+        )
+        self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
+        return result
 
     def _prepare_selected_plan(self, number: int) -> str:
         if not self.last_analysis or not self.last_analysis_source:
@@ -289,24 +384,18 @@ class VideoAgent:
         if number < 1 or number > len(recommendations):
             return f"方案 {number} 不存在。请在当前分析结果的有效方案中选择。"
         plan = recommendations[number - 1]
-        pending = {
-            "segments": plan.get("segments") or [],
-            "path": self.last_analysis_source,
-            "plan_id": str(plan.get("id") or f"plan-{number}"),
-            "title": str(plan.get("title") or f"方案 {number}"),
-        }
-        result = render_edit_plan(
-            **pending,
-            confirmed=False,
+        draft = create_draft(self.last_analysis_source, plan)
+        rendered = render_draft(draft["id"], preview=True)
+        self.active_draft_id = draft["id"]
+        self.pending_selected_plan = {"draft_id": draft["id"], "plan_id": draft["plan_id"]}
+        self.last_preview_path = rendered["path"]
+        music = draft.get("music") or {}
+        music_note = f"，已自动配上「{music['name']}」" if music.get("name") else ""
+        result = (
+            f"已生成「{draft['title']}」的原清视频预览{music_note}，页面播放器已自动切换。\n"
+            "请先观看预览；满意可回复“确认”导出高清成片，"
+            "不满意可在方案卡调整配乐或特效后重新预览。"
         )
-        marker = re.search(r"__VIDEO_AGENT_PENDING__(\{[^\n]*\})", result)
-        if marker:
-            try:
-                self.last_confirmation = json.loads(marker.group(1))
-                self.last_needs_confirm = True
-                self.pending_selected_plan = pending
-            except json.JSONDecodeError:
-                pass
         self.history.append(types.Content(role="model", parts=[types.Part(text=result)]))
         return result
 
@@ -317,7 +406,9 @@ class VideoAgent:
     @staticmethod
     def _is_cancel_request(text: str) -> bool:
         raw = (text or "").strip().lower()
-        return raw in {"取消", "不要执行", "先别改", "cancel", "no"}
+        return raw in {"取消", "不要执行", "先别改", "不满意", "取消预览", "返回原视频", "恢复原视频", "cancel", "no"} or (
+            "不满意" in raw and "原视频" in raw
+        )
 
 
 def load_settings() -> tuple[str, str]:

@@ -4,6 +4,7 @@
   const input = document.getElementById("chat-input");
   const sendBtn = document.getElementById("send-btn");
   const fileInput = document.getElementById("file-input");
+  const musicFileInput = document.getElementById("music-file-input");
   const player = document.getElementById("player");
   const playerEmpty = document.getElementById("player-empty");
   const currentTimeEl = document.getElementById("current-time");
@@ -51,6 +52,8 @@
   let frameStepSec = 1 / 30;
   let inPointSec = null;
   let outPointSec = null;
+  let musicLibrary = [];
+  let activeDraft = null;
 
   const CHAT_TIMEOUT_MS = 120000;
   const CHAT_WARN_MS = 20000;
@@ -111,7 +114,7 @@
 
   function clearConfirmCards() {
     if (!messagesEl) return;
-    messagesEl.querySelectorAll(".confirm-card").forEach((el) => el.remove());
+    messagesEl.querySelectorAll(".confirm-card, .draft-confirm-card").forEach((el) => el.remove());
   }
 
   function addConfirmCard(details = null) {
@@ -146,6 +149,7 @@
     busy = next;
     if (sendBtn) sendBtn.disabled = next;
     if (fileInput) fileInput.disabled = next;
+    if (musicFileInput) musicFileInput.disabled = next;
     if (btnReset) btnReset.disabled = next;
   }
 
@@ -177,6 +181,41 @@
       evidence.textContent = first ? `起始证据 ${formatMediaTime(first.start_sec)}：${first.reason || "未提供"}` : "缺少可执行片段";
       const actions = document.createElement("div");
       actions.className = "plan-actions";
+      const packageBox = document.createElement("div");
+      packageBox.className = "plan-package";
+      const musicSelect = document.createElement("select");
+      musicSelect.className = "plan-select";
+      const mood = plan.package?.music_mood || "与内容匹配";
+      musicSelect.innerHTML = `<option value="__auto__">自动匹配（${mood}）</option><option value="">不添加配乐</option>`;
+      musicLibrary.forEach((music) => {
+        const option = document.createElement("option");
+        option.value = music.name;
+        option.textContent = `${music.builtin ? "内置免版权 · " : ""}${music.name}${music.bpm ? ` · ${music.bpm} BPM` : ""}`;
+        musicSelect.appendChild(option);
+      });
+      const volume = document.createElement("input");
+      volume.type = "range";
+      volume.min = "0";
+      volume.max = "0.5";
+      volume.step = "0.01";
+      volume.value = String(plan.package?.music_volume ?? 0.18);
+      volume.title = "配乐音量";
+      const effectNames = { fade: "淡入淡出", slow_motion: "慢放", punch_zoom: "快速放大", flash: "闪白", shake: "震动" };
+      const effectWrap = document.createElement("div");
+      effectWrap.className = "effect-options";
+      const suggested = new Set((plan.effects || []).map((effect) => effect.type));
+      Object.entries(effectNames).forEach(([key, label]) => {
+        const option = document.createElement("label");
+        option.innerHTML = `<input type="checkbox" value="${key}" ${suggested.has(key) ? "checked" : ""} /> ${label}`;
+        effectWrap.appendChild(option);
+      });
+      const musicLabel = document.createElement("label");
+      musicLabel.textContent = "配乐";
+      musicLabel.appendChild(musicSelect);
+      const volumeLabel = document.createElement("label");
+      volumeLabel.textContent = "音量";
+      volumeLabel.appendChild(volume);
+      packageBox.append(musicLabel, volumeLabel, effectWrap);
       const jump = document.createElement("button");
       jump.type = "button";
       jump.className = "mini";
@@ -190,14 +229,89 @@
       const use = document.createElement("button");
       use.type = "button";
       use.className = "mini primary-mini";
-      use.textContent = "采用此方案";
-      use.addEventListener("click", () => sendChat(`采用方案 ${index + 1}`));
+      use.textContent = "生成视频预览";
+      use.addEventListener("click", () => previewPlan(index + 1, {
+        music_name: musicSelect.value,
+        music_volume: Number(volume.value),
+        beat_sync: true,
+        effects: Array.from(effectWrap.querySelectorAll('input:checked')).map((input) => input.value),
+      }));
       actions.append(jump, use);
-      item.append(name, detail, evidence, actions);
+      item.append(name, detail, evidence, packageBox, actions);
       wrap.appendChild(item);
     });
     messagesEl.appendChild(wrap);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  async function previewPlan(planNumber, options) {
+    if (busy) return;
+    setBusy(true);
+    addBubble("正在生成低分辨率视频预览…", "system");
+    try {
+      const res = await fetch("/api/plans/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_number: planNumber, ...options }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(formatDetail(data.detail));
+      activeDraft = data.draft;
+      applyState(data.state, data.preview_url);
+      addBubble(data.message, "assistant");
+      addDraftConfirmCard(activeDraft);
+    } catch (err) {
+      addBubble(friendlyClientError(err), "system");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function addDraftConfirmCard(draft) {
+    if (!messagesEl || !draft?.id) return;
+    messagesEl.querySelectorAll(".draft-confirm-card").forEach((element) => element.remove());
+    const wrap = document.createElement("div");
+    wrap.className = "draft-confirm-card";
+    const soundtrack = draft.music?.name
+      ? `已混入配乐：${escapeHtml(draft.music.name)} · 音量 ${Math.round(Number(draft.music.volume || 0) * 100)}%${draft.music.beat_sync ? " · 已卡点" : ""}`
+      : "当前预览没有配乐";
+    wrap.innerHTML = `
+      <strong>正在预览：${escapeHtml(draft.title || "AI 剪辑草稿")}</strong>
+      <p><strong>${soundtrack}</strong></p>
+      <p>请完整观看播放器中的预览。满意后再导出高清成片；不满意可返回原视频，或调整音乐/特效后重新预览。</p>
+      <div class="confirm-actions">
+        <button type="button" class="btn primary" data-act="export">确认并高清导出</button>
+        <button type="button" class="btn ghost" data-act="source">不满意，返回原视频</button>
+      </div>
+    `;
+    wrap.querySelector('[data-act="export"]').addEventListener("click", () => confirmDraft(draft.id, wrap));
+    wrap.querySelector('[data-act="source"]').addEventListener("click", () => {
+      wrap.remove();
+      sendChat("不满意，返回原视频");
+    });
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  async function confirmDraft(draftId, card) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/drafts/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft_id: draftId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(formatDetail(data.detail));
+      card?.remove();
+      applyState(data.state, data.state?.working_video?.url);
+      addBubble(data.message, "assistant");
+    } catch (err) {
+      addBubble(friendlyClientError(err), "system");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function clampTime(value) {
@@ -585,20 +699,26 @@
   function applyState(state, preferUrl) {
     if (!state) return;
     renderOutputs(state.outputs || []);
+    musicLibrary = Array.isArray(state.music) ? state.music : [];
+    activeDraft = state.active_draft || null;
 
     if (outputDirEl) {
       outputDirEl.textContent = state.output_dir ? `目录：${state.output_dir}` : "";
       outputDirEl.title = state.output_dir || "";
     }
 
+    const draftPreviewUrl = activeDraft?.preview?.url || "";
     const playUrl =
       preferUrl ||
+      draftPreviewUrl ||
       state.play_url ||
       state.latest_output?.url ||
       state.working_video?.url;
 
     let playName = "";
-    if (state.latest_output && state.latest_output.url === playUrl) {
+    if (draftPreviewUrl && draftPreviewUrl === playUrl) {
+      playName = `${activeDraft.title || "AI 剪辑"}（预览）`;
+    } else if (state.latest_output && state.latest_output.url === playUrl) {
       playName = state.latest_output.name;
     } else if (preferUrl && state.working_video?.url === preferUrl) {
       playName = state.working_video.name;
@@ -920,10 +1040,16 @@
       const reply = decorateReply(data.reply || "(无回复)");
       addBubble(reply, "assistant");
       addPlanCards(data.analysis);
-      if (looksLikeConfirm(reply, data.needs_confirm)) addConfirmCard(data.confirmation);
-      else clearConfirmCards();
+      if (data.active_draft?.preview?.url) {
+        clearConfirmCards();
+        addDraftConfirmCard(data.active_draft);
+      } else if (looksLikeConfirm(reply, data.needs_confirm)) {
+        addConfirmCard(data.confirmation);
+      } else {
+        clearConfirmCards();
+      }
       currentPlayUrl = "";
-      applyState(data.state);
+      applyState(data.state, data.preview_url || data.output_url || null);
       if (data.history) latestHistory = data.history;
     } catch (err) {
       if (pending) pending.remove();
@@ -1018,6 +1144,28 @@
 
   if (btnOpenFolder) {
     btnOpenFolder.addEventListener("click", () => revealOutput(null));
+  }
+
+  if (musicFileInput) {
+    musicFileInput.addEventListener("change", async () => {
+      const file = musicFileInput.files && musicFileInput.files[0];
+      if (!file || busy) return;
+      setBusy(true);
+      const body = new FormData();
+      body.append("file", file);
+      try {
+        const res = await fetch("/api/music/upload", { method: "POST", body });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(formatDetail(data.detail));
+        applyState(data.state);
+        addBubble(data.message, "system");
+      } catch (err) {
+        addBubble(friendlyClientError(err), "system");
+      } finally {
+        musicFileInput.value = "";
+        setBusy(false);
+      }
+    });
   }
 
   if (btnDeleteOutputs) {

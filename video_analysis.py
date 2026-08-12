@@ -156,14 +156,60 @@ def validate_analysis(result: dict[str, Any], duration: float | None, cache_key:
         segments.sort(key=lambda item: (item["start_sec"], item["end_sec"]))
         if any(current["start_sec"] < previous["end_sec"] for previous, current in zip(segments, segments[1:])):
             continue
+        calculated_duration = round(sum(item["end_sec"] - item["start_sec"] for item in segments), 3)
+        # A plan that preserves the entire source timeline is not an edit. Do
+        # not present it as an alternative merely to fill the three-card UI.
+        if (
+            duration is not None
+            and segments[0]["start_sec"] <= 0.1
+            and segments[-1]["end_sec"] >= duration - 0.1
+            and calculated_duration >= duration - 0.25
+        ):
+            continue
         strategy = str(rec.get("strategy") or "").strip().lower()
         if strategy not in STRATEGY_ORDER or strategy in seen_strategies:
             strategy = next((item for item in STRATEGY_ORDER if item not in seen_strategies), None)
         if strategy is None:
             continue
         seen_strategies.add(strategy)
-        calculated_duration = round(sum(item["end_sec"] - item["start_sec"] for item in segments), 3)
         plan_seed = f"{cache_key}:{strategy}:{index}:{segments}"
+        content_type = str(result.get("content_type") or "other")
+        package = rec.get("package") if isinstance(rec.get("package"), dict) else {}
+        raw_effects = rec.get("effects") if isinstance(rec.get("effects"), list) else []
+        effects: list[dict[str, Any]] = []
+        allowed_effects = {"fade", "crossfade", "slow_motion", "punch_zoom", "flash", "shake"}
+        for raw_effect in raw_effects[:20]:
+            if not isinstance(raw_effect, dict):
+                continue
+            effect_type = str(raw_effect.get("type") or "").strip().lower()
+            start_sec = _number(raw_effect.get("start_sec"))
+            if effect_type not in allowed_effects or start_sec is None:
+                continue
+            if duration is not None and start_sec > duration:
+                continue
+            effect = {
+                "type": effect_type,
+                "start_sec": round(start_sec, 3),
+                "reason": str(raw_effect.get("reason") or "强调高光时刻")[:200],
+            }
+            effect_duration = _number(raw_effect.get("duration_sec"))
+            if effect_duration is not None:
+                effect["duration_sec"] = round(min(effect_duration, 3.0), 3)
+            effects.append(effect)
+        if content_type == "gameplay" and not effects:
+            first = segments[0]
+            effects = [
+                {"type": "fade", "start_sec": first["start_sec"], "duration_sec": 0.35, "reason": "自然进入集锦"},
+                {"type": "punch_zoom", "start_sec": first["start_sec"], "duration_sec": 0.4, "reason": "强调首个高光"},
+            ]
+        music = package.get("music") if isinstance(package.get("music"), dict) else {}
+        default_mood = "高燃电子" if content_type == "gameplay" and strategy == "retention_short" else "与内容匹配"
+        music_mood = str(music.get("mood") or default_mood)[:80]
+        requested_volume = _number(music.get("volume"))
+        default_volume = 0.38 if any(word in music_mood for word in ("高燃", "电子", "热血", "激烈")) else 0.22
+        music_volume = min(1.0, max(0.0, requested_volume if requested_volume is not None else default_volume))
+        if any(word in music_mood for word in ("高燃", "电子", "热血", "激烈")):
+            music_volume = max(0.38, music_volume)
         recommendations.append(
             {
                 "id": "plan-" + hashlib.sha256(plan_seed.encode("utf-8")).hexdigest()[:12],
@@ -175,6 +221,13 @@ def validate_analysis(result: dict[str, Any], duration: float | None, cache_key:
                 "remove": _normalise_range_list(rec.get("remove"), duration),
                 "estimated_duration_sec": calculated_duration,
                 "confidence": min(1.0, max(0.0, _number(rec.get("confidence")) or 0.0)),
+                "package": {
+                    "music_mood": music_mood,
+                    "music_volume": music_volume,
+                    "beat_sync": bool(music.get("beat_sync", content_type == "gameplay" and strategy == "retention_short")),
+                },
+                "transition": rec.get("transition") if isinstance(rec.get("transition"), dict) else {"type": "crossfade", "duration_sec": 0.2},
+                "effects": effects,
             }
         )
 
@@ -198,6 +251,8 @@ def _repair_prompt(meta: dict[str, Any], prior: dict[str, Any]) -> str:
         "retention_short, information_complete, story_paced. Every plan needs non-overlapping "
         "segments with start_sec/end_sec inside this video duration, a concrete reason tied to "
         "observed audio or visuals, and a different goal. Do not invent timestamps. "
+        "Never return a plan that keeps the complete source timeline; every plan must remove, "
+        "reorder, or retime a meaningful portion of the video. "
         f"Video metadata: {json.dumps(meta, ensure_ascii=False)}. "
         f"Previous JSON: {json.dumps(prior, ensure_ascii=False)}"
     )
@@ -261,7 +316,10 @@ def _prompt(meta: dict[str, Any], transcript: dict[str, Any]) -> str:
       "segments": [{{"start_sec": 0, "end_sec": 5, "reason": "必须引用具体语音或画面证据"}}],
       "remove": [{{"start_sec": 5, "end_sec": 7, "reason": "必须说明删除依据"}}],
       "estimated_duration_sec": 5,
-      "confidence": 0.0
+      "confidence": 0.0,
+      "package": {{"music": {{"mood": "高燃电子|轻快|叙事舒缓|与内容匹配", "volume": 0.38, "beat_sync": true}}}},
+      "transition": {{"type": "crossfade", "duration_sec": 0.2}},
+      "effects": [{{"type": "fade|slow_motion|punch_zoom|flash|shake", "start_sec": 1.2, "duration_sec": 0.4, "reason": "为什么此处需要效果"}}]
     }}
   ],
   "limitations": ["无法确定的内容或可能漏检的细节"]
@@ -272,6 +330,9 @@ def _prompt(meta: dict[str, Any], transcript: dict[str, Any]) -> str:
 2. 不要只写“精彩、节奏好、适合传播”等空话。
 3. 快速动作、画面小字、低音量语音可能漏检，要诚实说明。
 4. 必须给出恰好 3 个实质不同的方案，strategy 依次使用 retention_short、information_complete、story_paced；优先生成能映射到保留片段/删除片段的建议。
+5. 每个方案不仅要说明剪切，还要给出适量配乐与特效包装；特效最多 6 个，宁缺毋滥。
+6. gameplay 内容的三个方案分别偏向：高燃卡点、操作还原、解说展示。只在能确认的高光时刻添加慢放/放大/闪白/震动。
+7. 不得把“从 0 秒到结尾完整保留原片”当作剪辑方案；每个方案必须在剪切、重排或变速上有实质变化。
 """.strip()
 
 
@@ -337,9 +398,13 @@ def analyze_video(
     include_data: bool = False,
 ) -> str | tuple[str, dict[str, Any]]:
     """Analyze one local video and return evidence-backed editing suggestions."""
+    def respond(message: str, analysis: dict[str, Any] | None = None) -> str | tuple[str, dict[str, Any]]:
+        """Keep include_data's return contract stable on every success/failure path."""
+        return (message, analysis or {}) if include_data else message
+
     video = video.resolve()
     if not video.exists() or not video.is_file():
-        return f"找不到视频：{video}"
+        return respond(f"找不到视频：{video}")
 
     key = _cache_key(video)
     cache = _load_cache()
@@ -354,7 +419,7 @@ def analyze_video(
             cached["analysis"] = analysis
             _save_cache(cache)
         formatted = _format_result(analysis, video, cached.get("transcript") or {})
-        return (formatted, analysis) if include_data else formatted
+        return respond(formatted, analysis)
 
     meta = _video_meta(video)
     upload_video, staged_upload = _prepare_ascii_upload(video)
@@ -364,11 +429,11 @@ def analyze_video(
         deadline = time.time() + float(os.getenv("VIDEO_ANALYSIS_TIMEOUT_SEC") or "180")
         while _file_state(uploaded) in {"PROCESSING", "STATE_UNSPECIFIED", ""}:
             if time.time() >= deadline:
-                return "视频上传到 Gemini 后处理超时，请稍后重试。"
+                return respond("视频上传到 Gemini 后处理超时，请稍后重试。")
             time.sleep(2)
             uploaded = client.files.get(name=uploaded.name)
         if _file_state(uploaded) == "FAILED":
-            return "Gemini 无法处理这个视频文件。"
+            return respond("Gemini 无法处理这个视频文件。")
 
         response = client.models.generate_content(
             model=model,
@@ -394,7 +459,7 @@ def analyze_video(
                 key,
             )
     except Exception as exc:  # noqa: BLE001
-        return f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}"
+        return respond(f"视频分析失败：{type(exc).__name__}: {str(exc)[:500]}")
 
     finally:
         _cleanup_staged_upload(staged_upload)
@@ -402,4 +467,4 @@ def analyze_video(
     cache[key] = {"video": str(video), "analysis": result, "transcript": transcript, "created_at": time.time()}
     _save_cache(cache)
     formatted = _format_result(result, video, transcript)
-    return (formatted, result) if include_data else formatted
+    return respond(formatted, result)

@@ -10,14 +10,14 @@
       href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/style.css?v=1.9.0" />
+    <link rel="stylesheet" href="/style.css?v=2.0.0" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true"></div>
     <main class="shell">
       <header class="brand">
         <p class="brand-mark">灵剪 <span>EditMate</span></p>
-        <p class="brand-line">用中文对话剪视频 · 本地隐私优先 · v1.8</p>
+        <p class="brand-line">先预览再确认 · 配乐卡点与高光特效 · v2.0</p>
       </header>
 
       <section class="stage">
@@ -30,7 +30,7 @@
             <div class="guide-lines">
               <span>① 先上传视频或选择已有成片</span>
               <span>② 点击“AI 教你怎么剪”</span>
-              <span>③ 选择方案，确认后再导出</span>
+              <span>③ 配音乐与特效，先看视频预览再确认</span>
             </div>
           </aside>
           <div class="player-main">
@@ -85,6 +85,10 @@
             <label class="btn primary upload-btn">
               上传视频
               <input id="file-input" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.mkv,.webm" hidden />
+            </label>
+            <label class="btn ghost upload-btn">
+              上传配乐
+              <input id="music-file-input" type="file" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/flac,audio/ogg,.mp3,.wav,.m4a,.aac,.flac,.ogg" hidden />
             </label>
             <button id="btn-refresh" class="btn ghost" type="button">刷新预览</button>
             <button id="btn-history" class="btn ghost" type="button">对话记录</button>
@@ -185,6 +189,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=1.9.0"></script>
+    <script src="/app.js?v=2.0.0-plan-return-mix"></script>
   </body>
 </html>
